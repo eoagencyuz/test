@@ -143,3 +143,11 @@ async def test_both_phones_are_sent(db, apps_script):
     assert (apps_script.rows["5"]["phone"], apps_script.rows["5"]["phone2"]) == ("998935550000", "998901112233")
     assert (apps_script.rows["6"]["phone"], apps_script.rows["6"]["phone2"]) == ("998935550001", "998935550001")
     await sync.stop()
+
+
+async def test_not_found_attempt_is_sent(db, apps_script):
+    db.save_user(9, None, "TOPILMAGAN TALABA", "998935550009", "TT9999999", "TOPILMADI", "998901112299")
+    sync = SheetsSync(db, apps_script.url, SECRET)
+    assert await sync.sync_pending() == 1
+    assert apps_script.rows["9"]["hemis_id"] == "TOPILMADI"
+    await sync.stop()

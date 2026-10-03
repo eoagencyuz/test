@@ -127,14 +127,14 @@ async def test_start_shows_welcome_with_register_button(client):
 async def test_full_registration_flow(client):
     await client.text("/start")
     out = await client.press("reg:start")
-    assert out[0].startswith("1️⃣ Ism va familiyangizni")
+    assert out[0].startswith("Ism va familiyangizni")
 
     assert (await client.text("АЛИЕВ ВАЛИ"))[0].startswith("❌ Ism va familiya")      # TEST 3
     assert (await client.text("ALIYEV123 VALI"))[0].startswith("❌ Ism va familiya")  # TEST 4
     assert await client.state() == "Registration:waiting_name"
 
     out = await client.text("testov   alpha")                                         # TEST 2
-    assert out == ["2️⃣ «Telefon raqamni yuborish» tugmasini bosing."]
+    assert out == ["«Telefon raqamni yuborish» tugmasini bosing."]
     assert client.last_markup().keyboard[0][0].request_contact is True
 
     # Tugma bosqichida raqamni yozib yuborish mumkin emas
@@ -142,7 +142,7 @@ async def test_full_registration_flow(client):
     assert await client.state() == "Registration:waiting_phone"
 
     out = await share(client)
-    assert out[0].startswith("2️⃣ Telefon raqamingizni yuboring.")
+    assert out[0].startswith("Telefon raqamingizni yuboring.")
     assert await client.state() == "Registration:waiting_phone2"
 
     assert (await client.text("+998901112233"))[0].startswith("❌ Telefon raqami")    # TEST 7
@@ -150,7 +150,7 @@ async def test_full_registration_flow(client):
     assert await client.state() == "Registration:waiting_phone2"
 
     out = await client.text("901112233")                                              # TEST 5
-    assert out[0].startswith("3️⃣ Pasport seriya")
+    assert out[0].startswith("Pasport seriya")
 
     assert (await client.text("tt1111111"))[0].startswith("❌ Pasport")               # TEST 10
     assert (await client.text("TT 1111111"))[0].startswith("❌ Pasport")
@@ -188,7 +188,7 @@ async def test_phone_accepted_with_998_prefix(client):                          
     await client.text("TESTOV ALPHA")
     await share(client)
     out = await client.text("998901112233")
-    assert out[0].startswith("3️⃣ Pasport")
+    assert out[0].startswith("Pasport")
 
 
 async def test_contact_button(client):
@@ -198,7 +198,7 @@ async def test_contact_button(client):
     assert out[0].startswith("❌ Iltimos, faqat o‘zingizning")
     assert await client.state() == "Registration:waiting_phone"
     out = await share(client, phone="+7 999 123 45 67")    # chet el raqami ham qabul qilinadi
-    assert out[0].startswith("2️⃣ Telefon raqamingizni yuboring.")
+    assert out[0].startswith("Telefon raqamingizni yuboring.")
     assert (await client.state()) == "Registration:waiting_phone2"
     # Qo'lda kiritish bosqichida kontakt emas, matn kutiladi
     out = await share(client)
@@ -212,8 +212,22 @@ async def test_not_found_gives_no_hemis_id(client):                             
     out = await fill_until_confirm(client, passport="TT9999999")
     out = await client.press("reg:confirm")
     assert out[1].startswith("❌ Siz kiritgan ma’lumotlar bo‘yicha talaba topilmadi.")
-    assert not any("HEMIS ID:" in t for t in out)
-    assert client.db.get_user(USER_ID) is None
+    assert not any("TALABA ID" in t for t in out)
+    # Urinish saqlanadi (Google Sheets uchun), lekin HEMIS ID berilmaydi
+    user = client.db.get_user(USER_ID)
+    assert (user.hemis_id, user.passport) == ("TOPILMADI", "TT9999999")
+    # /start -- bosh menyu, qayta urinish mumkin
+    out = await client.text("/start")
+    assert out[0].startswith("Assalomu alaykum!")
+    out = await client.press("reg:restart")
+    assert out[0].startswith("Ism va familiyangizni")
+    await client.text("TESTOV ALPHA")
+    await share(client)
+    await client.text("901112233")
+    await client.text("TT1111111")
+    out = await client.press("reg:confirm")
+    assert "🪪 TALABA ID: 300000000001" in out[1]
+    assert client.db.get_user(USER_ID).hemis_id == "300000000001"
 
 
 async def test_same_name_students(client):                                            # TEST 13
@@ -228,13 +242,13 @@ async def test_start_during_registration_and_after(client):                     
     await client.text("TESTOV ALPHA")
     out = await client.text("/start")
     assert out[0].startswith("ℹ️ Ro‘yxatdan o‘tish jarayoni davom etmoqda")
-    assert out[1].startswith("2️⃣ «Telefon raqamni yuborish»")
+    assert out[1].startswith("«Telefon raqamni yuborish»")
     assert await client.state() == "Registration:waiting_phone"
     assert client.last_markup().keyboard[0][0].request_contact is True
 
     await share(client)
     out = await client.text("/start")
-    assert out[1].startswith("2️⃣ Telefon raqamingizni yuboring.")
+    assert out[1].startswith("Telefon raqamingizni yuboring.")
     await client.text("901112233")
     await client.text("TT1111111")
     await client.press("reg:confirm")
@@ -268,23 +282,33 @@ async def test_cancel_button(client):                                           
 async def test_edit_button_restarts(client):
     await fill_until_confirm(client)
     out = await client.press("reg:edit")
-    assert out[0].startswith("1️⃣ Ism va familiyangizni")
+    assert out[0].startswith("Ism va familiyangizni")
     assert await client.state() == "Registration:waiting_name"
 
 
-async def test_reregister_button(client):                                             # TEST 17
+async def test_one_hemis_id_per_account(client):                                     # TEST 17
     await fill_until_confirm(client)
-    await client.press("reg:confirm")
-    out = await client.press("reg:restart")
-    assert out[0].startswith("1️⃣ Ism va familiyangizni")
-    assert await client.state() == "Registration:waiting_name"
-    await client.text("BIRXIL EPSILON")
-    await share(client)
-    await client.text("905550001")
-    await client.text("TQ3333333")
     out = await client.press("reg:confirm")
-    assert "300000000003" in out[1]
-    assert client.db.get_user(USER_ID).hemis_id == "300000000003"
+    # Natijada "Qayta ro'yxatdan o'tish" tugmasi yo'q -- faqat sayt
+    assert [b.callback_data for row in client.last_markup().inline_keyboard for b in row] == [None]
+    # Eski tugma yoki /start orqali boshqa pasportni tekshirib bo'lmaydi
+    out = await client.press("reg:restart")
+    assert out[0].startswith("ℹ️ Siz avval ro‘yxatdan o‘tgansiz.") and "300000000001" in out[0]
+    assert await client.state() is None
+    out = await client.press("reg:start")
+    assert "300000000001" in out[0]
+    out = await client.text("/start")
+    assert out[0].startswith("ℹ️ Siz avval ro‘yxatdan o‘tgansiz.")
+    assert client.db.get_user(USER_ID).hemis_id == "300000000001"
+
+
+async def test_one_id_enforced_even_at_confirmation(client):
+    # Ro'yxatdan o'tish boshlangan, shu orada (boshqa oynadan) HEMIS ID olingan
+    await fill_until_confirm(client, "BIRXIL EPSILON", "905550001", "TQ3333333")
+    client.db.save_user(USER_ID, "tester", "TESTOV ALPHA", "998935550000", "TT1111111", "300000000001")
+    out = await client.press("reg:confirm")
+    assert out[0].startswith("ℹ️ Bitta Telegram akkauntdan faqat bitta HEMIS ID")
+    assert client.db.get_user(USER_ID).hemis_id == "300000000001"
 
 
 async def test_non_text_inputs_do_not_crash(client):                                  # TEST 21-bo'lim
@@ -404,7 +428,7 @@ async def test_channel_check_resumes_registration_step(client, required_channel)
     assert await client.state() == "Registration:waiting_name"
     client.session.channel_member = True
     out = await client.press("sub:check")
-    assert out[0].startswith("1️⃣ Ism va familiyangizni")
+    assert out[0].startswith("Ism va familiyangizni")
 
 
 async def test_channel_check_can_be_turned_off(client):
