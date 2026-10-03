@@ -229,6 +229,7 @@ class RegisteredUser:
     hemis_id: str
     registered_at: str
     phone2: str = ""   # qo'lda kiritilgan qo'shimcha telefon
+    entered_name: str = ""   # botda yozilgan F.I.Sh.
 
 
 class Database:
@@ -248,6 +249,8 @@ class Database:
             self._conn.execute("ALTER TABLE users ADD COLUMN sheets_synced INTEGER NOT NULL DEFAULT 0")
         if "phone2" not in columns:
             self._conn.execute("ALTER TABLE users ADD COLUMN phone2 TEXT NOT NULL DEFAULT ''")
+        if "entered_name" not in columns:
+            self._conn.execute("ALTER TABLE users ADD COLUMN entered_name TEXT NOT NULL DEFAULT ''")
 
     def execute(self, sql: str, params: tuple = ()) -> list[tuple]:
         with self._lock:
@@ -263,12 +266,12 @@ class Database:
     # ---------------- Ro'yxatdan o'tganlar ----------------
 
     def save_user(self, telegram_id: int, username: str | None, full_name: str,
-                  phone: str, passport: str, hemis_id: str, phone2: str = "") -> None:
+                  phone: str, passport: str, hemis_id: str, phone2: str = "", entered_name: str = "") -> None:
         self.execute(
             """
             INSERT INTO users (telegram_id, username, full_name, phone, passport, hemis_id,
-                               registered_at, sheets_synced, phone2)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
+                               registered_at, sheets_synced, phone2, entered_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
             ON CONFLICT(telegram_id) DO UPDATE SET
                 username = excluded.username,
                 full_name = excluded.full_name,
@@ -277,15 +280,15 @@ class Database:
                 hemis_id = excluded.hemis_id,
                 registered_at = excluded.registered_at,
                 sheets_synced = 0,
-                phone2 = excluded.phone2
+                phone2 = excluded.phone2, entered_name = excluded.entered_name
             """,
             (telegram_id, username, full_name, phone, passport, hemis_id,
-             datetime.now(timezone.utc).isoformat(timespec="seconds"), phone2),
+             datetime.now(timezone.utc).isoformat(timespec="seconds"), phone2, entered_name),
         )
 
     def get_user(self, telegram_id: int) -> RegisteredUser | None:
         rows = self.execute(
-            "SELECT telegram_id, username, full_name, phone, passport, hemis_id, registered_at, phone2 "
+            "SELECT telegram_id, username, full_name, phone, passport, hemis_id, registered_at, phone2, entered_name "
             "FROM users WHERE telegram_id = ?",
             (telegram_id,),
         )
@@ -294,7 +297,7 @@ class Database:
     def get_unsynced_users(self, limit: int = 50) -> list[RegisteredUser]:
         """Google Sheets'ga hali yozilmagan foydalanuvchilar."""
         rows = self.execute(
-            "SELECT telegram_id, username, full_name, phone, passport, hemis_id, registered_at, phone2 "
+            "SELECT telegram_id, username, full_name, phone, passport, hemis_id, registered_at, phone2, entered_name "
             "FROM users WHERE sheets_synced = 0 ORDER BY registered_at LIMIT ?",
             (limit,),
         )
@@ -682,7 +685,7 @@ def build_record(user: RegisteredUser) -> dict:
         "full_name": user.full_name,
         # phone: Telegram tugmasi orqali; phone2: qolda kiritilgan raqam (jadvalda alohida ustunlar)
         "phone": user.phone,
-        "phone2": user.phone2,
+        "phone2": user.phone2, "entered_name": user.entered_name,
         "passport": user.passport,
         "hemis_id": user.hemis_id,
         "registered_at": local_time(user.registered_at),
@@ -1145,7 +1148,7 @@ async def confirm_and_search(callback: CallbackQuery, state: FSMContext,
     # Bazaga va Google Sheets'ga talabaning bazadagi to'g'ri ismi yoziladi
     await asyncio.to_thread(
         db.save_user, user.id, user.username, student.full_name or data["full_name"],
-        data["phone"], data["passport"], hemis_id, data.get("phone2", ""),
+        data["phone"], data["passport"], hemis_id, data.get("phone2", ""), data["full_name"],
     )
     await state.clear()
     logger.info("Ro'yxatdan o'tdi (user_id=%s, hemis_id=%s)", user.id, mask_value(hemis_id))
