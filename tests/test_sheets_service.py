@@ -140,5 +140,5 @@ async def test_both_phones_are_sent(db, apps_script):
     sync = SheetsSync(db, apps_script.url, SECRET)
     assert await sync.sync_pending() == 2
     assert apps_script.rows["5"]["phone"] == "998935550000 / 998901112233"
-    assert apps_script.rows["6"]["phone"] == "998935550001"   # bir xil bo'lsa takrorlanmaydi
+    assert apps_script.rows["6"]["phone"] == "998935550001 / 998935550001"   # bir xil bo'lsa ham ikkalasi
     await sync.stop()

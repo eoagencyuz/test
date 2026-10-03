@@ -680,9 +680,9 @@ def build_record(user: RegisteredUser) -> dict:
         "telegram_id": str(user.telegram_id),
         "username": user.username or "",
         "full_name": user.full_name,
-        # Apps Script o'zgarmasligi uchun ikkala raqam bitta "Telefon" ustunida
-        "phone": user.phone if not user.phone2 or user.phone2 == user.phone
-        else f"{user.phone} / {user.phone2}",
+        # Apps Script o'zgarmasligi uchun ikkala raqam bitta "Telefon" ustunida:
+        # "tugma orqali yuborilgan / qo'lda kiritilgan" (bir xil bo'lsa ham)
+        "phone": f"{user.phone} / {user.phone2}" if user.phone2 else user.phone,
         "passport": user.passport,
         "hemis_id": user.hemis_id,
         "registered_at": local_time(user.registered_at),
@@ -1144,8 +1144,9 @@ async def confirm_and_search(callback: CallbackQuery, state: FSMContext,
     hemis_id = student.hemis_id
     # Ism bazadagi to'liq ko'rinishda (bo'lmasa foydalanuvchi kiritgani)
     full_name = display_name(student.full_name or data["full_name"])
+    # Bazaga va Google Sheets'ga talabaning bazadagi to'g'ri ismi yoziladi
     await asyncio.to_thread(
-        db.save_user, user.id, user.username, data["full_name"],
+        db.save_user, user.id, user.username, student.full_name or data["full_name"],
         data["phone"], data["passport"], hemis_id, data.get("phone2", ""),
     )
     await state.clear()
