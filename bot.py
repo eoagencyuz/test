@@ -68,6 +68,29 @@ PORT = int(os.environ.get("PORT", 10000))
 
 # Talabalar ro'yxati (Excel) va ma'lumotlar bazasi
 EXCEL_FILE = _path(os.environ.get("EXCEL_FILE", "data.xlsx"))
+
+# Render Secret Files faqat matn qabul qiladi: Excel base64 matn ko'rinishida
+# saqlanadi (EXCEL_B64_FILE) va ishga tushishda qayta .xlsx ga aylantiriladi.
+EXCEL_B64_FILE = os.environ.get("EXCEL_B64_FILE", "").strip()
+
+
+def _decode_excel_b64(b64_path: str, target: Path) -> Path:
+    import base64
+    import binascii
+    import tempfile
+
+    try:
+        raw = base64.b64decode("".join(Path(b64_path).read_text().split()), validate=True)
+    except (OSError, binascii.Error, ValueError) as e:
+        logger.error("EXCEL_B64_FILE o'qilmadi (%s), %s ishlatiladi", e, target)
+        return target
+    out = Path(tempfile.gettempdir()) / "data.xlsx"
+    out.write_bytes(raw)
+    return out
+
+
+if EXCEL_B64_FILE:
+    EXCEL_FILE = _decode_excel_b64(EXCEL_B64_FILE, EXCEL_FILE)
 DATABASE_FILE = _path(os.environ.get("DATABASE_FILE", "bot_data.db"))
 
 STUDENT_SITE_URL = "https://student.kiu.uz"
@@ -1456,8 +1479,8 @@ async def on_startup(bot: Bot):
 
 
 async def on_shutdown(bot: Bot):
-    if WEBHOOK_URL:
-        await bot.delete_webhook()
+    # Webhook bu yerda o'chirilmaydi: Render deploy paytida yangi nusxa webhook'ni
+    # o'rnatgandan keyin eski nusxa to'xtaydi va uni o'chirib yuborardi.
     if sheets:
         await sheets.stop()
     db.close()
