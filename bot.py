@@ -826,7 +826,7 @@ WELCOME = (
 )
 
 ASK_NAME = (
-    "1️⃣ Ism va familiyangizni to‘liq kiriting.\n\n"
+    "Ism va familiyangizni to‘liq kiriting.\n\n"
     "Faqat LOTIN alifbosidan foydalaning.\n"
     "Masalan:\n"
     "ALIYEV VALI"
@@ -839,11 +839,11 @@ INVALID_NAME = (
     "Kamida familiya va ism yozilishi kerak."
 )
 
-ASK_PHONE_SHARE = "2️⃣ «Telefon raqamni yuborish» tugmasini bosing."
+ASK_PHONE_SHARE = "«Telefon raqamni yuborish» tugmasini bosing."
 PRESS_PHONE_BUTTON = "❌ Iltimos, pastdagi «📱 Telefon raqamni yuborish» tugmasini bosing."
 
 ASK_PHONE_MANUAL = (
-    "2️⃣ Telefon raqamingizni yuboring.\n\n"
+    "Telefon raqamingizni yuboring.\n\n"
     "Ruxsat etilgan formatlar:\n"
     "XXXXXXXXX\n"
     "yoki\n"
@@ -862,7 +862,7 @@ FOREIGN_CONTACT = (
 )
 
 ASK_PASSPORT = (
-    "3️⃣ Pasport seriya va raqamingizni kiriting.\n\n"
+    "Pasport seriya va raqamingizni kiriting.\n\n"
     "Format:\n"
     "AA1234567\n"
     "Ya’ni:\n"
@@ -885,6 +885,12 @@ SEARCHING = "🔎 Ma’lumotlaringiz tekshirilmoqda..."
 STILL_SEARCHING = "⏳ Ma’lumotlaringiz tekshirilmoqda, iltimos kuting."
 CHOOSE_BUTTON = "ℹ️ Iltimos, quyidagi tugmalardan birini tanlang."
 STALE_BUTTON = "Bu tugma eskirgan. Iltimos, /start buyrug‘ini yuboring."
+ONE_ID_ONLY = (
+    "ℹ️ Bitta Telegram akkauntdan faqat bitta HEMIS ID tekshirish mumkin.\n\n"
+    "Siz allaqachon HEMIS ID olgansiz."
+)
+# HEMIS ID topilmagan urinishlar bazada va Google Sheets'da shu belgi bilan saqlanadi
+NOT_FOUND_MARK = "TOPILMADI"
 SUBSCRIBE_REQUIRED = (
     "📢 Botdan foydalanish uchun avval rasmiy kanalimizga a’zo bo‘ling.\n\n"
     "A’zo bo‘lgach, «✅ Tekshirish» tugmasini bosing."
@@ -980,10 +986,9 @@ def confirm_kb() -> InlineKeyboardMarkup:
     ])
 
 
-def site_and_reregister_kb() -> InlineKeyboardMarkup:
+def site_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🌐 Student tizimiga kirish", url=STUDENT_SITE_URL)],
-        [InlineKeyboardButton(text="🔄 Qayta ro‘yxatdan o‘tish", callback_data=CB_REREGISTER)],
     ])
 
 
@@ -1139,6 +1144,16 @@ async def confirm_and_search(callback: CallbackQuery, state: FSMContext,
     message = callback.message
     data = await state.get_data()
 
+    # Bitta akkauntdan faqat bitta HEMIS ID
+    existing = await asyncio.to_thread(db.get_user, user.id)
+    if has_hemis_id(existing):
+        await state.clear()
+        await callback.answer()
+        await message.edit_reply_markup(reply_markup=None)
+        await message.answer(ONE_ID_ONLY)
+        await message.answer(already_registered(existing.hemis_id), reply_markup=site_kb())
+        return
+
     # Ikki marta bosilishining oldini olish
     await state.set_state(Registration.searching_student)
     await callback.answer()
@@ -1162,7 +1177,15 @@ async def confirm_and_search(callback: CallbackQuery, state: FSMContext,
 
     if student is None:
         logger.info("Talaba topilmadi (user_id=%s)", user.id)
+        # Topilmagan urinish ham saqlanadi va Google Sheets'ga yoziladi (HEMIS ID = TOPILMADI);
+        # talaba ma'lumotlarini to'g'rilab qayta urinishi mumkin
+        await asyncio.to_thread(
+            db.save_user, user.id, user.username, data["full_name"],
+            data["phone"], data["passport"], NOT_FOUND_MARK, data.get("phone2", ""), data["full_name"],
+        )
         await state.clear()
+        if sheets:
+            sheets.trigger()
         await message.answer(NOT_FOUND, reply_markup=reregister_kb())
         return
 
@@ -1182,7 +1205,7 @@ async def confirm_and_search(callback: CallbackQuery, state: FSMContext,
 
     await message.answer(
         result_message(full_name, hemis_id, data["passport"], student.direction),
-        reply_markup=site_and_reregister_kb(),
+        reply_markup=site_kb(),
     )
 
 
@@ -1195,14 +1218,16 @@ start_router = Router(name="start")
 fallback_router = Router(name="fallback")
 
 
+def has_hemis_id(user: RegisteredUser | None) -> bool:
+    """Foydalanuvchi bu akkauntdan HEMIS ID olganmi (topilmagan urinishlar hisobga olinmaydi)."""
+    return bool(user and user.hemis_id and user.hemis_id != NOT_FOUND_MARK)
+
+
 async def show_home(message: Message, user_id: int, db: Database) -> None:
-    """Ro'yxatdan o'tgan bo'lsa HEMIS IDni, aks holda boshlang'ich menyuni ko'rsatadi."""
+    """HEMIS ID olgan bo'lsa uni, aks holda boshlang'ich menyuni ko'rsatadi."""
     registered = await asyncio.to_thread(db.get_user, user_id)
-    if registered:
-        await message.answer(
-            already_registered(registered.hemis_id),
-            reply_markup=site_and_reregister_kb(),
-        )
+    if has_hemis_id(registered):
+        await message.answer(already_registered(registered.hemis_id), reply_markup=site_kb())
     else:
         await message.answer(WELCOME, reply_markup=register_kb())
 
@@ -1229,9 +1254,15 @@ async def cancel_command(message: Message, state: FSMContext) -> None:
 
 
 @start_router.callback_query(F.data.in_({CB_REGISTER, CB_REREGISTER}))
-async def register_button(callback: CallbackQuery, state: FSMContext) -> None:
+async def register_button(callback: CallbackQuery, state: FSMContext, db: Database) -> None:
     if await state.get_state() == Registration.searching_student.state:
         await callback.answer(STILL_SEARCHING, show_alert=True)
+        return
+    # Bitta akkauntdan faqat bitta HEMIS ID: olgan bo'lsa qayta ro'yxatdan o'tib bo'lmaydi
+    registered = await asyncio.to_thread(db.get_user, callback.from_user.id)
+    if has_hemis_id(registered):
+        await callback.answer(ONE_ID_ONLY, show_alert=True)
+        await callback.message.answer(already_registered(registered.hemis_id), reply_markup=site_kb())
         return
     await callback.answer()
     await begin_registration(callback.message, state)
