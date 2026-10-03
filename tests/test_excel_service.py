@@ -70,13 +70,22 @@ def test_found_with_all_fields(excel_file):
 
 @pytest.mark.parametrize("name, phone, passport", [
     ("NOMALUM TALABA", "998900000000", "XX0000000"),          # umuman yo'q
-    ("TESTOV ALPHA", "998901112233", "TT9999999"),            # pasport mos emas
-    ("TESTOV ALPHA", "998909999999", "TT1111111"),            # telefon mos emas
-    ("BOSHQA ISM", "998901112233", "TT1111111"),              # ism mos emas
+    ("TESTOV ALPHA", "998901112233", "TT9999999"),            # pasport bazada yo'q
     ("BOSHID ZETA", "998907770000", "TZ5555555"),             # Excel'da HEMIS ID bo'sh
 ])
 def test_not_found(excel_file, name, phone, passport):
     assert StudentRegistry(excel_file).find_student(name, phone, passport) is None
+
+
+@pytest.mark.parametrize("name, phone", [
+    ("TESTOV ALPHA", "998909999999"),   # telefon xato
+    ("XATO ISM", "998901112233"),       # ism xato
+    ("XATO ISM", "998909999999"),       # ikkalasi ham xato
+    (None, None),
+])
+def test_correct_passport_is_enough(excel_file, name, phone):
+    s = StudentRegistry(excel_file).find_student(name, phone, "TT1111111")
+    assert s and s.hemis_id == "300000000001"
 
 
 def test_name_only_never_returns_hemis_id(excel_file):
@@ -89,17 +98,33 @@ def test_same_name_resolved_by_phone_and_passport(excel_file):
     reg = StudentRegistry(excel_file)
     assert reg.find_student("BIRXIL EPSILON", "998905550001", "TQ3333333").hemis_id == "300000000003"
     assert reg.find_student("BIRXIL EPSILON", "998905550002", "TQ4444444").hemis_id == "300000000004"
-    # Bitta talabaning pasporti, boshqasining telefoni -> rad etiladi
-    assert reg.find_student("BIRXIL EPSILON", "998905550002", "TQ3333333") is None
+    # Pasport hal qiluvchi: boshqa talabaning telefoni yozilsa ham pasport egasi topiladi
+    assert reg.find_student("BIRXIL EPSILON", "998905550002", "TQ3333333").hemis_id == "300000000003"
 
 
 def test_ambiguous_match_returns_nothing(tmp_path):
     rows = [
         [1, "IKKI NUSXA", "901000000", "TA1000000", 1001],
         [2, "IKKI NUSXA", "901000000", "TA1000000", 1002],
+        # Bir pasport ikki xil odamda (bazadagi xato) -- ism orqali ajratiladi
+        [3, "BIRINCHI ODAM", "902000000", "TB2000000", 2001],
+        [4, "IKKINCHI ODAM", "903000000", "TB2000000", 2002],
     ]
     path = write_workbook(tmp_path / "dup.xlsx", rows=rows)
-    assert StudentRegistry(path).find_student("IKKI NUSXA", "998901000000", "TA1000000") is None
+    reg = StudentRegistry(path)
+    assert reg.find_student("IKKI NUSXA", "998901000000", "TA1000000") is None
+    assert reg.find_student("IKKINCHI ODAM", None, "TB2000000").hemis_id == "2002"
+    assert reg.find_student("XATO ISM", None, "TB2000000") is None
+
+
+def test_without_passport_needs_phone_and_name(tmp_path):
+    headers = ["F.I.Sh.", "Telefon", "HEMIS ID"]
+    path = write_workbook(tmp_path / "nopass.xlsx", headers=headers,
+                          rows=[["TELEFONLI TALABA", "904000000", 4001]])
+    reg = StudentRegistry(path)
+    assert reg.find_student("TELEFONLI TALABA", "998904000000", "TT0000000").hemis_id == "4001"
+    assert reg.find_student("XATO ISM", "998904000000", "TT0000000") is None
+    assert reg.find_student("TELEFONLI TALABA", None, "TT0000000") is None
 
 
 def test_separate_name_columns_and_title_rows(tmp_path):

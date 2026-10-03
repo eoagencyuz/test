@@ -570,46 +570,63 @@ def _name_matches(entered: str, stored: str) -> bool:
     return bool(entered_key) and stored_key.startswith(entered_key) and len(entered_key) in stored_bounds
 
 
+def _matches_all(student: Student, name: str, phone: str | None, passport: str) -> set | None:
+    """Solishtirilgan maydonlar to'plami; birortasi farq qilsa None."""
+    matched = set()
+    if passport and student.passport:
+        if student.passport != passport:
+            return None
+        matched.add("passport")
+    if phone and student.phones:
+        if phone not in student.phones:
+            return None
+        matched.add("phone")
+    if name and student.full_name:
+        if not _name_matches(name, student.full_name):
+            return None
+        matched.add("name")
+    return matched
+
+
+def _single(candidates: list[Student]) -> Student | None:
+    by_id = {s.hemis_id: s for s in candidates}
+    if len(by_id) == 1:
+        return next(iter(by_id.values()))
+    if len(by_id) > 1:
+        logger.warning("Bir nechta talaba mos keldi (%d ta), HEMIS ID berilmadi", len(by_id))
+    return None
+
+
 def find_student(students: list[Student], full_name: str | None = None,
                  phone: str | None = None, passport: str | None = None) -> Student | None:
-    """Kiritilgan ma'lumotlarga to'liq mos keladigan yagona talabani qaytaradi.
+    """Kiritilgan ma'lumotlarga mos keladigan yagona talabani qaytaradi.
 
     Qoidalar:
-    - Excel'da mavjud bo'lgan har bir solishtiriladigan maydon mos kelishi shart;
-      birortasi farq qilsa, bu qator rad etiladi.
-    - Kamida 2 ta maydon mos kelishi va ulardan biri pasport yoki telefon bo'lishi shart
-      (faqat ism-familiya bo'yicha HEMIS ID berilmaydi).
+    - Pasport bazada yagona HEMIS IDga tegishli bo'lsa -- shu talaba qaytariladi
+      (ism yoki telefon xato kiritilgan bo'lsa ham).
+    - Pasport bir nechta turli HEMIS IDda uchrasa -- ism va telefon orqali ajratiladi.
+    - Pasport bazada bo'lmasa (yoki bazada pasport ustuni yo'q bo'lsa) -- telefon va
+      F.I.Sh. ikkalasi mos kelishi shart. Faqat ism-familiya bo'yicha HEMIS ID berilmaydi.
     - Bir nechta turli HEMIS ID mos kelsa, hech biri qaytarilmaydi.
     """
     name = normalize_full_name(full_name) if full_name else ""
     phone = normalize_phone(phone) if phone else None
     passport = normalize_passport(passport) if passport else ""
 
-    matches: dict[str, Student] = {}
+    if passport:
+        same_passport = [s for s in students if s.passport == passport]
+        if same_passport:
+            if len({s.hemis_id for s in same_passport}) == 1:
+                return same_passport[0]
+            refined = [s for s in same_passport if _matches_all(s, name, phone, passport) is not None]
+            return _single(refined)
+
+    candidates = []
     for student in students:
-        matched = set()
-
-        if passport and student.passport:
-            if student.passport != passport:
-                continue
-            matched.add("passport")
-        if phone and student.phones:
-            if phone not in student.phones:
-                continue
-            matched.add("phone")
-        if name and student.full_name:
-            if not _name_matches(name, student.full_name):
-                continue
-            matched.add("name")
-
-        if len(matched) >= 2 and matched & {"passport", "phone"}:
-            matches.setdefault(student.hemis_id, student)
-
-    if len(matches) == 1:
-        return next(iter(matches.values()))
-    if len(matches) > 1:
-        logger.warning("Bir nechta talaba mos keldi (%d ta), HEMIS ID berilmadi", len(matches))
-    return None
+        matched = _matches_all(student, name, phone, passport)
+        if matched and len(matched) >= 2 and matched & {"passport", "phone"}:
+            candidates.append(student)
+    return _single(candidates)
 
 
 registry = StudentRegistry(EXCEL_FILE)

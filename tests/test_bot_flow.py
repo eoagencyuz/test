@@ -284,8 +284,10 @@ async def test_web_api(excel_file):
         assert ok == {"found": True, "hemis_id": "300000000001", "full_name": "TESTOV ALPHA BETA O‘G‘LI"}
         only_passport = await (await http.get("/api/check?passport=TT1111111")).json()
         assert only_passport["found"] is False
-        wrong = await (await http.get("/api/check?passport=TT1111111&phone=909999999")).json()
-        assert wrong["found"] is False
+        wrong_phone = await (await http.get("/api/check?passport=TT1111111&phone=909999999")).json()
+        assert wrong_phone["hemis_id"] == "300000000001"   # pasport to'g'ri bo'lsa yetarli
+        unknown = await (await http.get("/api/check?passport=TT9999999&phone=901112233")).json()
+        assert unknown["found"] is False
         assert (await http.get("/")).status == 200
 
 
@@ -310,3 +312,11 @@ async def test_registration_is_sent_to_sheets(client):
         client.dp["sheets"] = None
         await sync.stop()
         await fake.server.close()
+
+
+async def test_wrong_name_but_correct_passport(client):
+    await fill_until_confirm(client, name="NOTOGRI ISM", phone="909999999", passport="TT1111111")
+    out = await client.press("reg:confirm")
+    # Salomlashuvda bazadagi to'g'ri ism ishlatiladi
+    assert out[1].startswith("🎓 Hurmatli TESTOV ALPHA BETA O‘G‘LI!")
+    assert "🪪 TALABA ID: 300000000001" in out[1]
