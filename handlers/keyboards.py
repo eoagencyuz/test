@@ -13,21 +13,15 @@ CB_REREGISTER = "reg:restart"
 CB_CONFIRM = "reg:confirm"
 CB_EDIT = "reg:edit"
 CB_CANCEL = "reg:cancel"
-CB_FAQ_LIST = "faq:list"
-CB_FAQ_ITEM = "faq:"  # + mavzu tartib raqami
 
 PHONE_BUTTON_TEXT = "📱 Telefon raqamni yuborish"
 
 REMOVE = ReplyKeyboardRemove()
 
 
-FAQ_BUTTON = InlineKeyboardButton(text="❓ Savol-javob", callback_data=CB_FAQ_LIST)
-
-
 def register_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📝 Ro‘yxatdan o‘tish", callback_data=CB_REGISTER)],
-        [FAQ_BUTTON],
     ])
 
 
@@ -57,20 +51,6 @@ def site_and_reregister_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🌐 Student tizimiga kirish", url=STUDENT_SITE_URL)],
         [InlineKeyboardButton(text="🔄 Qayta ro‘yxatdan o‘tish", callback_data=CB_REREGISTER)],
-        [FAQ_BUTTON],
-    ])
-
-
-def faq_list_kb(titles: list[str]) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=title[:60], callback_data=f"{CB_FAQ_ITEM}{i}")]
-        for i, title in enumerate(titles)
-    ])
-
-
-def faq_more_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Barcha savollar", callback_data=CB_FAQ_LIST)],
     ])
 
 
