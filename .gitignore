@@ -1,0 +1,18 @@
+# Maxfiy sozlamalar
+.env
+
+# Talabalar ma'lumotlari (Excel) va baza
+data.xlsx
+*.xlsx
+*.xls
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
