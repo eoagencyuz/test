@@ -680,9 +680,9 @@ def build_record(user: RegisteredUser) -> dict:
         "telegram_id": str(user.telegram_id),
         "username": user.username or "",
         "full_name": user.full_name,
-        # Apps Script o'zgarmasligi uchun ikkala raqam bitta "Telefon" ustunida:
-        # "tugma orqali yuborilgan / qo'lda kiritilgan" (bir xil bo'lsa ham)
-        "phone": f"{user.phone} / {user.phone2}" if user.phone2 else user.phone,
+        # phone: Telegram tugmasi orqali; phone2: qolda kiritilgan raqam (jadvalda alohida ustunlar)
+        "phone": user.phone,
+        "phone2": user.phone2,
         "passport": user.passport,
         "hemis_id": user.hemis_id,
         "registered_at": local_time(user.registered_at),
