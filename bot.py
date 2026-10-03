@@ -899,7 +899,7 @@ def confirm_data(full_name: str, phone: str, phone2: str, passport: str) -> str:
 
 def result_message(full_name: str, hemis_id: str, passport: str, direction: str) -> str:
     return (
-        f"🎓 Hurmatli {full_name}!\n\n"
+        f"Hurmatli {full_name}!\n\n"
         "Sizning Qarshi xalqaro universiteti HEMIS Student axborot tizimidagi talaba ID raqamingiz aniqlandi.\n\n"
         f"🪪 TALABA ID: {hemis_id}\n"
         f"🔑 Boshlang‘ich parol: {passport}\n"
@@ -910,9 +910,7 @@ def result_message(full_name: str, hemis_id: str, passport: str, direction: str)
         "* Login: Sizga berilgan talaba ID raqami.\n"
         "* Parol: Pasportingizning seriya va raqami.\n\n"
         "⚠️ Muhim: Tizimga birinchi marta kirganingizdan so‘ng xavfsizlik maqsadida "
-        "parolingizni albatta almashtiring.\n\n"
-        "Hurmat bilan,\n"
-        "Qarshi xalqaro universiteti ma’muriyati."
+        "parolingizni albatta almashtiring."
     )
 
 
