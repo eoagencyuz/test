@@ -1,6 +1,6 @@
 import pytest
 
-from services.validation_service import (
+from bot import (
     mask_value,
     normalize_full_name,
     normalize_passport,

@@ -1,23 +1,1184 @@
-import asyncio
-import logging
+"""Qarshi xalqaro universiteti -- HEMIS ID bot (bitta faylda).
 
-from aiogram import Bot, Dispatcher
+Talaba Telegram botda ro'yxatdan o'tadi: F.I.Sh. -> telefon -> pasport -> tasdiqlash.
+Bot ma'lumotlarni Excel bazadagi talabalar bilan solishtiradi va HEMIS IDni
+(faqat bazadagi qiymatni) yuboradi. Ro'yxatdan o'tganlar SQLite bazada saqlanadi
+va (sozlangan bo'lsa) Google Sheets'ga yoziladi.
+
+Ishga tushirish:  pip install -r requirements.txt  ->  .env ga BOT_TOKEN yozing  ->  python bot.py
+"""
+import asyncio
+import json
+import logging
+import os
+import re
+import sqlite3
+import threading
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+import aiohttp
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.filters import Command, CommandStart, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.base import BaseStorage, StateType, StorageKey
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
-
-import config
-from database.database import Database, SQLiteStorage
-from handlers import registration, start, student
-from services.excel_service import ExcelDataError, registry
-from services.sheets_service import create_sheets_sync
-from services.validation_service import display_name, validate_passport, validate_phone
+from dotenv import load_dotenv
+from openpyxl import load_workbook
 
 logger = logging.getLogger(__name__)
 
-db = Database(config.DATABASE_FILE)
-sheets = create_sheets_sync(db, config.SHEETS_WEBHOOK_URL, config.SHEETS_SECRET, config.SHEETS_SYNC_INTERVAL)
+
+# ======================================================================
+# SOZLAMALAR (.env)
+# ======================================================================
+
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
+
+
+def _path(value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else BASE_DIR / path
+
+
+# Bot token faqat .env yoki environment o'zgaruvchisidan olinadi
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+
+# Webhook sozlamalari (WEBHOOK_HOST bo'lsa webhook, bo'lmasa polling ishlaydi)
+WEBHOOK_HOST = os.environ.get("WEBHOOK_HOST", "").strip().rstrip("/")
+WEBHOOK_PATH = "/webhook"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}" if WEBHOOK_HOST else None
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "").strip() or None
+PORT = int(os.environ.get("PORT", 10000))
+
+# Talabalar ro'yxati (Excel) va ma'lumotlar bazasi
+EXCEL_FILE = _path(os.environ.get("EXCEL_FILE", "data.xlsx"))
+DATABASE_FILE = _path(os.environ.get("DATABASE_FILE", "bot_data.db"))
+
+STUDENT_SITE_URL = "https://student.kiu.uz"
+STUDENT_SITE_NAME = "student.kiu.uz"
+
+# Ro'yxatdan o'tganlarni Google Sheets'ga yozish (Google Apps Script Web App).
+# SHEETS_WEBHOOK_URL bo'sh bo'lsa bu funksiya o'chiq.
+SHEETS_WEBHOOK_URL = os.environ.get("SHEETS_WEBHOOK_URL", "").strip()
+SHEETS_SECRET = os.environ.get("SHEETS_SECRET", "").strip()
+SHEETS_SYNC_INTERVAL = int(os.environ.get("SHEETS_SYNC_INTERVAL", 60))
+
+
+# ======================================================================
+# VALIDATSIYA: F.I.Sh., telefon, pasport
+# ======================================================================
+
+# O'zbek lotin yozuvidagi apostrof variantlari: ' ‘ ’ ʻ ʼ ` ´ ′
+APOSTROPHES = "'‘’ʻʼ`´′"
+_APOSTROPHE_RE = re.compile(f"[{re.escape(APOSTROPHES)}]")
+
+# Har bir so'z faqat lotin harflaridan iborat; so'z ichida apostrof bo'lishi mumkin
+# (masalan, O'G'LI, MA'RUF). Kirill, raqam, emoji va boshqa belgilar o'tmaydi.
+_NAME_WORD_RE = re.compile(r"^[A-Z]+(?:'[A-Z]+)*$")
+NAME_MIN_WORDS = 2  # familiya + ism
+NAME_MAX_WORDS = 4  # + otasining ismi va "O'G'LI"/"QIZI"
+
+PHONE_LOCAL_RE = re.compile(r"^[0-9]{9}$")
+PHONE_FULL_RE = re.compile(r"^998[0-9]{9}$")
+PASSPORT_RE = re.compile(r"^[A-Z]{2}[0-9]{7}$")
+
+
+# ---------------- F.I.Sh. ----------------
+
+def normalize_full_name(value) -> str:
+    """Apostroflarni bitta ko'rinishga keltiradi, bo'sh joylarni tozalaydi, katta harfga o'tkazadi."""
+    text = _APOSTROPHE_RE.sub("'", str(value or ""))
+    return " ".join(text.split()).upper()
+
+
+def validate_name(value) -> str | None:
+    """To'g'ri bo'lsa standart ko'rinishdagi F.I.Sh.ni, aks holda None qaytaradi."""
+    name = normalize_full_name(value)
+    words = name.split(" ")
+    if not NAME_MIN_WORDS <= len(words) <= NAME_MAX_WORDS:
+        return None
+    for word in words:
+        if len(word.replace("'", "")) < 2 or not _NAME_WORD_RE.match(word):
+            return None
+    return name
+
+
+def display_name(name: str) -> str:
+    """Standart F.I.Sh.ni chiroyli ko'rinishda chiqarish uchun (O'/G' -> O‘/G‘)."""
+    return name.replace("'", "‘")
+
+
+# ---------------- Telefon ----------------
+
+def validate_phone(value) -> str | None:
+    """Qo'lda kiritilgan raqam: faqat XXXXXXXXX yoki 998XXXXXXXXX.
+
+    To'g'ri bo'lsa 998XXXXXXXXX ko'rinishida qaytaradi, aks holda None.
+    """
+    text = str(value or "").strip()
+    if PHONE_LOCAL_RE.match(text):
+        return "998" + text
+    if PHONE_FULL_RE.match(text):
+        return text
+    return None
+
+
+def normalize_phone(value) -> str | None:
+    """Excel yoki Telegram Contact'dagi raqamni 998XXXXXXXXX ko'rinishiga keltiradi.
+
+    Bu yerda +, bo'sh joy, chiziqcha kabi belgilar olib tashlanadi
+    (qo'lda kiritilgan raqam uchun validate_phone ishlatiladi).
+    """
+    digits = re.sub(r"[^0-9]", "", str(value or ""))
+    if len(digits) == 9:
+        digits = "998" + digits
+    return digits if PHONE_FULL_RE.match(digits) else None
+
+
+# ---------------- Pasport ----------------
+
+def validate_passport(value) -> str | None:
+    """Faqat 2 ta katta lotin harfi + 7 ta raqam (bo'sh joy, chiziqcha, kichik harfsiz)."""
+    text = str(value or "").strip()
+    return text if PASSPORT_RE.match(text) else None
+
+
+def normalize_passport(value) -> str:
+    """Excel'dagi pasportni solishtirish uchun: katta harf, bo'sh joy va belgilarsiz."""
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+
+# ---------------- Loglar uchun ----------------
+
+def mask_value(value) -> str:
+    """Maxfiy qiymatni loglarda ochiq ko'rsatmaslik uchun maskalaydi."""
+    text = str(value or "")
+    if len(text) <= 4:
+        return "*" * len(text)
+    return text[:2] + "*" * (len(text) - 4) + text[-2:]
+
+
+# ======================================================================
+# MA'LUMOTLAR BAZASI (SQLite) va FSM holatini saqlash
+# ======================================================================
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    telegram_id   INTEGER PRIMARY KEY,
+    username      TEXT,
+    full_name     TEXT NOT NULL,
+    phone         TEXT NOT NULL,
+    passport      TEXT NOT NULL,
+    hemis_id      TEXT NOT NULL,
+    registered_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS fsm (
+    storage_key TEXT PRIMARY KEY,
+    state       TEXT,
+    data        TEXT NOT NULL DEFAULT '{}'
+);
+"""
+
+
+@dataclass(frozen=True)
+class RegisteredUser:
+    telegram_id: int
+    username: str | None
+    full_name: str
+    phone: str
+    passport: str
+    hemis_id: str
+    registered_at: str
+
+
+class Database:
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(self.path, check_same_thread=False)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.executescript(SCHEMA)
+        self._migrate()
+        self._conn.commit()
+
+    def _migrate(self) -> None:
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(users)")}
+        if "sheets_synced" not in columns:
+            # 0 - Google Sheets'ga hali yozilmagan, 1 - yozilgan
+            self._conn.execute("ALTER TABLE users ADD COLUMN sheets_synced INTEGER NOT NULL DEFAULT 0")
+
+    def execute(self, sql: str, params: tuple = ()) -> list[tuple]:
+        with self._lock:
+            cur = self._conn.execute(sql, params)
+            rows = cur.fetchall()
+            self._conn.commit()
+            return rows
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+    # ---------------- Ro'yxatdan o'tganlar ----------------
+
+    def save_user(self, telegram_id: int, username: str | None, full_name: str,
+                  phone: str, passport: str, hemis_id: str) -> None:
+        self.execute(
+            """
+            INSERT INTO users (telegram_id, username, full_name, phone, passport, hemis_id,
+                               registered_at, sheets_synced)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+            ON CONFLICT(telegram_id) DO UPDATE SET
+                username = excluded.username,
+                full_name = excluded.full_name,
+                phone = excluded.phone,
+                passport = excluded.passport,
+                hemis_id = excluded.hemis_id,
+                registered_at = excluded.registered_at,
+                sheets_synced = 0
+            """,
+            (telegram_id, username, full_name, phone, passport, hemis_id,
+             datetime.now(timezone.utc).isoformat(timespec="seconds")),
+        )
+
+    def get_user(self, telegram_id: int) -> RegisteredUser | None:
+        rows = self.execute(
+            "SELECT telegram_id, username, full_name, phone, passport, hemis_id, registered_at "
+            "FROM users WHERE telegram_id = ?",
+            (telegram_id,),
+        )
+        return RegisteredUser(*rows[0]) if rows else None
+
+    def get_unsynced_users(self, limit: int = 50) -> list[RegisteredUser]:
+        """Google Sheets'ga hali yozilmagan foydalanuvchilar."""
+        rows = self.execute(
+            "SELECT telegram_id, username, full_name, phone, passport, hemis_id, registered_at "
+            "FROM users WHERE sheets_synced = 0 ORDER BY registered_at LIMIT ?",
+            (limit,),
+        )
+        return [RegisteredUser(*row) for row in rows]
+
+    def mark_synced(self, user: RegisteredUser) -> None:
+        # Yuborish paytida foydalanuvchi qayta ro'yxatdan o'tgan bo'lsa, yangi yozuv belgilanmaydi
+        self.execute(
+            "UPDATE users SET sheets_synced = 1 WHERE telegram_id = ? AND registered_at = ?",
+            (user.telegram_id, user.registered_at),
+        )
+
+
+def _key(key: StorageKey) -> str:
+    return f"{key.bot_id}:{key.chat_id}:{key.user_id}:{key.thread_id or ''}:{key.destiny}"
+
+
+class SQLiteStorage(BaseStorage):
+    """aiogram FSM holatini SQLite bazada saqlaydi."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    async def set_state(self, key: StorageKey, state: StateType = None) -> None:
+        value = state.state if isinstance(state, State) else state
+        self.db.execute(
+            "INSERT INTO fsm (storage_key, state) VALUES (?, ?) "
+            "ON CONFLICT(storage_key) DO UPDATE SET state = excluded.state",
+            (_key(key), value),
+        )
+
+    async def get_state(self, key: StorageKey) -> str | None:
+        rows = self.db.execute("SELECT state FROM fsm WHERE storage_key = ?", (_key(key),))
+        return rows[0][0] if rows else None
+
+    async def set_data(self, key: StorageKey, data: Mapping[str, Any]) -> None:
+        self.db.execute(
+            "INSERT INTO fsm (storage_key, data) VALUES (?, ?) "
+            "ON CONFLICT(storage_key) DO UPDATE SET data = excluded.data",
+            (_key(key), json.dumps(dict(data), ensure_ascii=False)),
+        )
+
+    async def get_data(self, key: StorageKey) -> dict[str, Any]:
+        rows = self.db.execute("SELECT data FROM fsm WHERE storage_key = ?", (_key(key),))
+        return json.loads(rows[0][0]) if rows else {}
+
+    async def close(self) -> None:
+        pass
+
+
+# ======================================================================
+# EXCEL BAZADAN TALABANI QIDIRISH
+# ======================================================================
+
+# Sarlavha qatori shu qatorlar ichidan qidiriladi
+HEADER_SCAN_ROWS = 10
+
+
+class ExcelDataError(Exception):
+    """Excel fayl topilmadi yoki undagi ustunlarni aniqlab bo'lmadi."""
+
+
+@dataclass(frozen=True)
+class Student:
+    full_name: str        # standartlashtirilgan F.I.Sh.
+    phones: frozenset     # 998XXXXXXXXX ko'rinishidagi raqamlar
+    passport: str         # standartlashtirilgan pasport
+    hemis_id: str         # Excel'dagi qiymat (o'zgartirilmagan)
+    direction: str = ""   # ta'lim yo'nalishi (Excel'da bo'lsa)
+
+
+@dataclass(frozen=True)
+class Columns:
+    hemis: int
+    passport: int | None
+    phone: int | None
+    full_name: int | None
+    surname: int | None
+    first_name: int | None
+    patronymic: int | None
+    direction: int | None = None
+
+
+def _header_key(value) -> str:
+    """Sarlavhani solishtirish uchun: kichik harf, faqat harf va raqamlar."""
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def find_hemis_id_column(headers: list) -> int | None:
+    """'HEMIS ID', 'HEMIS_ID', 'HEMISID', 'Hemis ID' kabi ustunni topadi."""
+    keys = [_header_key(h) for h in headers]
+    for exact in ("hemisid", "hemis"):
+        if exact in keys:
+            return keys.index(exact)
+    for i, key in enumerate(keys):
+        if "hemis" in key:
+            return i
+    return None
+
+
+def find_passport_column(headers: list) -> int | None:
+    """'Pasport', 'Passport', 'Pasport seriya va raqami' kabi ustunni topadi."""
+    for i, h in enumerate(headers):
+        key = _header_key(h)
+        if "pasport" in key or "passport" in key:
+            return i
+    return None
+
+
+def find_phone_column(headers: list) -> int | None:
+    """'Telefon', 'Telefon raqam', 'Phone', 'Telefon №' kabi ustunni topadi."""
+    for i, h in enumerate(headers):
+        key = _header_key(h)
+        if "telefon" in key or "phone" in key or key in ("tel", "telraqam", "mobil"):
+            return i
+    return None
+
+
+def find_direction_column(headers: list) -> int | None:
+    """'Yo'nalish', 'Ta'lim yo'nalishi', 'Mutaxassislik', 'Specialty' kabi ustunni topadi."""
+    for i, h in enumerate(headers):
+        key = _header_key(h)
+        if "yonalish" in key or "mutaxassislik" in key or key in ("specialty", "direction", "speciality"):
+            return i
+    return None
+
+
+def find_name_columns(headers: list) -> dict:
+    """F.I.Sh. ustunini (yoki alohida Familiya / Ism / Otasining ismi ustunlarini) topadi."""
+    result = {"full_name": None, "surname": None, "first_name": None, "patronymic": None}
+    for i, h in enumerate(headers):
+        key = _header_key(h)
+        if not key:
+            continue
+        if result["full_name"] is None and (
+            key.startswith(("fio", "fish", "fullname"))
+            or key in ("ismfamiliya", "familiyaism", "familiyaismi", "talabafio",
+                       "talabafish", "talaba", "name")
+        ):
+            result["full_name"] = i
+        elif key in ("familiya", "familiyasi", "surname", "lastname"):
+            result["surname"] = i
+        elif key in ("ism", "ismi", "firstname"):
+            result["first_name"] = i
+        elif key in ("otasiningismi", "sharifi", "patronymic", "middlename"):
+            result["patronymic"] = i
+    return result
+
+
+def detect_columns(headers: list) -> Columns | None:
+    hemis = find_hemis_id_column(headers)
+    if hemis is None:
+        return None
+    names = find_name_columns(headers)
+    return Columns(
+        hemis=hemis,
+        passport=find_passport_column(headers),
+        phone=find_phone_column(headers),
+        direction=find_direction_column(headers),
+        **names,
+    )
+
+
+def _cell_text(value) -> str:
+    """Excel katagini matnga aynan aylantiradi (butun son 12345.0 -> '12345')."""
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _row_phones(value) -> frozenset:
+    """Katakda bir nechta raqam bo'lishi mumkin (vergul, nuqtali vergul, / bilan)."""
+    phones = set()
+    for part in re.split(r"[,;/\n]", _cell_text(value)):
+        phone = normalize_phone(part)
+        if phone:
+            phones.add(phone)
+    return frozenset(phones)
+
+
+def _row_name(row: tuple, cols: Columns) -> str:
+    def get(idx):
+        return _cell_text(row[idx]) if idx is not None and idx < len(row) else ""
+
+    if cols.full_name is not None:
+        return normalize_full_name(get(cols.full_name))
+    parts = [get(cols.surname), get(cols.first_name), get(cols.patronymic)]
+    return normalize_full_name(" ".join(p for p in parts if p))
+
+
+def load_students(path: Path) -> list[Student]:
+    """Excel fayldagi barcha varaqlardan talabalarni o'qiydi."""
+    if not path.exists():
+        raise ExcelDataError(f"Excel fayl topilmadi: {path.name}")
+
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    students: list[Student] = []
+    try:
+        for sheet in workbook.worksheets:
+            rows = sheet.iter_rows(values_only=True)
+            cols = None
+            for _ in range(HEADER_SCAN_ROWS):
+                header = next(rows, None)
+                if header is None:
+                    break
+                cols = detect_columns(list(header))
+                if cols:
+                    break
+            if not cols:
+                continue
+
+            for row in rows:
+                if not row or cols.hemis >= len(row):
+                    continue
+                hemis_id = _cell_text(row[cols.hemis])
+                if not hemis_id:
+                    continue
+                passport = ""
+                if cols.passport is not None and cols.passport < len(row):
+                    passport = normalize_passport(_cell_text(row[cols.passport]))
+                phones = frozenset()
+                if cols.phone is not None and cols.phone < len(row):
+                    phones = _row_phones(row[cols.phone])
+                direction = ""
+                if cols.direction is not None and cols.direction < len(row):
+                    direction = " ".join(_cell_text(row[cols.direction]).split())
+                students.append(Student(
+                    full_name=_row_name(row, cols),
+                    phones=phones,
+                    passport=passport,
+                    hemis_id=hemis_id,
+                    direction=direction,
+                ))
+    finally:
+        workbook.close()
+
+    if not students:
+        raise ExcelDataError("Excel faylda HEMIS ID ustuni yoki talabalar topilmadi")
+    return students
+
+
+class StudentRegistry:
+    """Excel ma'lumotlarini xotirada saqlaydi; fayl o'zgarsa avtomatik qayta o'qiydi."""
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self._lock = threading.Lock()
+        self._mtime = None
+        self._students: list[Student] = []
+
+    def students(self) -> list[Student]:
+        with self._lock:
+            try:
+                mtime = os.path.getmtime(self.path)
+            except OSError:
+                raise ExcelDataError(f"Excel fayl topilmadi: {self.path.name}")
+            if mtime != self._mtime:
+                self._students = load_students(self.path)
+                self._mtime = mtime
+                logger.info("Excel yuklandi: %d ta talaba", len(self._students))
+            return self._students
+
+    def find_student(self, full_name: str | None = None, phone: str | None = None,
+                     passport: str | None = None) -> Student | None:
+        return find_student(self.students(), full_name, phone, passport)
+
+
+def _name_matches(entered: str, stored: str) -> bool:
+    """Kiritilgan so'zlar Excel'dagi F.I.Sh. boshidagi so'zlar bilan bir xil bo'lishi kerak.
+
+    Masalan, 'FAMILIYA ISM' Excel'dagi 'FAMILIYA ISM OTASINING_ISMI QIZI' ga mos keladi.
+    """
+    entered_words = entered.split()
+    stored_words = stored.split()
+    return len(entered_words) <= len(stored_words) and stored_words[:len(entered_words)] == entered_words
+
+
+def find_student(students: list[Student], full_name: str | None = None,
+                 phone: str | None = None, passport: str | None = None) -> Student | None:
+    """Kiritilgan ma'lumotlarga to'liq mos keladigan yagona talabani qaytaradi.
+
+    Qoidalar:
+    - Excel'da mavjud bo'lgan har bir solishtiriladigan maydon mos kelishi shart;
+      birortasi farq qilsa, bu qator rad etiladi.
+    - Kamida 2 ta maydon mos kelishi va ulardan biri pasport yoki telefon bo'lishi shart
+      (faqat ism-familiya bo'yicha HEMIS ID berilmaydi).
+    - Bir nechta turli HEMIS ID mos kelsa, hech biri qaytarilmaydi.
+    """
+    name = normalize_full_name(full_name) if full_name else ""
+    phone = normalize_phone(phone) if phone else None
+    passport = normalize_passport(passport) if passport else ""
+
+    matches: dict[str, Student] = {}
+    for student in students:
+        matched = set()
+
+        if passport and student.passport:
+            if student.passport != passport:
+                continue
+            matched.add("passport")
+        if phone and student.phones:
+            if phone not in student.phones:
+                continue
+            matched.add("phone")
+        if name and student.full_name:
+            if not _name_matches(name, student.full_name):
+                continue
+            matched.add("name")
+
+        if len(matched) >= 2 and matched & {"passport", "phone"}:
+            matches.setdefault(student.hemis_id, student)
+
+    if len(matches) == 1:
+        return next(iter(matches.values()))
+    if len(matches) > 1:
+        logger.warning("Bir nechta talaba mos keldi (%d ta), HEMIS ID berilmadi", len(matches))
+    return None
+
+
+registry = StudentRegistry(EXCEL_FILE)
+
+
+# ======================================================================
+# GOOGLE SHEETS'GA YOZISH
+# ======================================================================
+
+# O'zbekiston vaqti (UTC+5, yozgi vaqt yo'q)
+TASHKENT_TZ = timezone(timedelta(hours=5))
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
+
+
+def local_time(iso_utc: str) -> str:
+    try:
+        return datetime.fromisoformat(iso_utc).astimezone(TASHKENT_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return iso_utc
+
+
+def build_record(user: RegisteredUser) -> dict:
+    return {
+        "telegram_id": str(user.telegram_id),
+        "username": user.username or "",
+        "full_name": user.full_name,
+        "phone": user.phone,
+        "passport": user.passport,
+        "hemis_id": user.hemis_id,
+        "registered_at": local_time(user.registered_at),
+    }
+
+
+class SheetsSync:
+    def __init__(self, db: Database, url: str, secret: str, interval: int = 60):
+        self.db = db
+        self.url = url
+        self.secret = secret
+        self.interval = max(10, interval)
+        self._session: aiohttp.ClientSession | None = None
+        self._lock = asyncio.Lock()
+        self._task: asyncio.Task | None = None
+        self._triggers: set[asyncio.Task] = set()
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(timeout=REQUEST_TIMEOUT)
+        return self._session
+
+    async def push(self, user: RegisteredUser) -> bool:
+        """Bitta foydalanuvchini Sheets'ga yozadi. Muvaffaqiyatli bo'lsa True."""
+        session = await self._get_session()
+        payload = {"secret": self.secret, "record": build_record(user)}
+        try:
+            async with session.post(self.url, json=payload) as resp:
+                if resp.status != 200:
+                    logger.warning("Sheets javobi %s (user_id=%s)", resp.status, user.telegram_id)
+                    return False
+                body = await resp.json(content_type=None)
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
+            logger.warning("Sheets'ga yozib bo'lmadi (user_id=%s): %s", user.telegram_id, type(e).__name__)
+            return False
+        if not isinstance(body, dict) or body.get("ok") is not True:
+            error = body.get("error") if isinstance(body, dict) else None
+            logger.warning("Sheets xatolik qaytardi (user_id=%s): %s", user.telegram_id, error)
+            return False
+        return True
+
+    async def sync_pending(self) -> int:
+        """Yozilmagan barcha foydalanuvchilarni yuboradi. Yuborilganlar sonini qaytaradi."""
+        async with self._lock:
+            sent = 0
+            users = await asyncio.to_thread(self.db.get_unsynced_users)
+            for user in users:
+                if not await self.push(user):
+                    break  # Sheets ishlamayapti -- keyingi urinishda davom etamiz
+                await asyncio.to_thread(self.db.mark_synced, user)
+                sent += 1
+            if sent:
+                logger.info("Google Sheets'ga %d ta yozuv yuborildi", sent)
+            return sent
+
+    def trigger(self) -> None:
+        """Yangi ro'yxatdan o'tgandan keyin darhol yuborish (javobni kutmasdan)."""
+        task = asyncio.create_task(self._safe_sync())
+        self._triggers.add(task)
+        task.add_done_callback(self._triggers.discard)
+
+    async def _safe_sync(self) -> None:
+        try:
+            await self.sync_pending()
+        except Exception:
+            logger.exception("Google Sheets bilan sinxronlashda kutilmagan xatolik")
+
+    async def _run_forever(self) -> None:
+        while True:
+            await self._safe_sync()
+            await asyncio.sleep(self.interval)
+
+    def start(self) -> None:
+        if self._task is None:
+            self._task = asyncio.create_task(self._run_forever())
+
+    async def stop(self) -> None:
+        for task in (self._task, *self._triggers):
+            if task and not task.done():
+                task.cancel()
+        self._task = None
+        if self._session and not self._session.closed:
+            await self._session.close()
+
+
+def create_sheets_sync(db: Database, url: str, secret: str, interval: int) -> SheetsSync | None:
+    if not url:
+        return None
+    if not secret:
+        logger.error("SHEETS_WEBHOOK_URL berilgan, lekin SHEETS_SECRET bo'sh -- Google Sheets o'chirildi")
+        return None
+    return SheetsSync(db, url, secret, interval)
+
+
+# ======================================================================
+# RO'YXATDAN O'TISH BOSQICHLARI (STATE)
+# ======================================================================
+
+class Registration(StatesGroup):
+    """Ro'yxatdan o'tish bosqichlari. COMPLETED holati users jadvalida saqlanadi."""
+    waiting_name = State()
+    waiting_phone = State()
+    waiting_passport = State()
+    confirming_data = State()
+    searching_student = State()
+
+
+IN_PROGRESS_STATES = (
+    Registration.waiting_name,
+    Registration.waiting_phone,
+    Registration.waiting_passport,
+    Registration.confirming_data,
+)
+
+
+# ======================================================================
+# BOT XABARLARI
+# ======================================================================
+
+WELCOME = (
+    "Assalomu alaykum! 👋\n\n"
+    "Qarshi Xalqaro Universiteti talabalari uchun HEMIS ma’lumotlarini aniqlash xizmatiga xush kelibsiz.\n\n"
+    "Davom etish uchun ro‘yxatdan o‘ting.\n\n"
+    "Ma’lumotlaringizni ketma-ket kiritishingiz kerak bo‘ladi."
+)
+
+ASK_NAME = (
+    "1️⃣ Ism va familiyangizni to‘liq kiriting.\n\n"
+    "Faqat LOTIN alifbosidan foydalaning.\n\n"
+    "Masalan:\n"
+    "ALIYEV VALI\n\n"
+    "Ism va familiya to‘liq yozilishi shart."
+)
+INVALID_NAME = (
+    "❌ Ism va familiya noto‘g‘ri formatda.\n\n"
+    "Iltimos, ism va familiyangizni to‘liq LOTIN alifbosida kiriting.\n\n"
+    "Masalan:\n"
+    "ALIYEV VALI\n\n"
+    "Kamida familiya va ism yozilishi kerak."
+)
+
+ASK_PHONE = (
+    "2️⃣ Telefon raqamingizni yuboring.\n\n"
+    "📱 Eng qulay usul — «Telefon raqamni yuborish» tugmasini bosing.\n\n"
+    "Yoki telefon raqamingizni qo‘lda kiriting.\n\n"
+    "Ruxsat etilgan formatlar:\n\n"
+    "XXXXXXXXX\n"
+    "yoki\n"
+    "998XXXXXXXXX\n\n"
+    "Masalan, tasodifiy namuna:\n"
+    "901234567\n"
+    "998901234567\n\n"
+    "⚠️ Namuna raqamlar faqat formatni ko‘rsatish uchun berilgan."
+)
+INVALID_PHONE = (
+    "❌ Telefon raqami noto‘g‘ri formatda.\n\n"
+    "Telefon raqamingizni quyidagi formatlardan birida kiriting:\n\n"
+    "XXXXXXXXX\n\n"
+    "yoki\n\n"
+    "998XXXXXXXXX\n\n"
+    "Yoki «📱 Telefon raqamni yuborish» tugmasidan foydalaning."
+)
+FOREIGN_CONTACT = (
+    "❌ Iltimos, faqat o‘zingizning telefon raqamingizni "
+    "«📱 Telefon raqamni yuborish» tugmasi orqali yuboring."
+)
+UNSUPPORTED_CONTACT = (
+    "❌ Faqat O‘zbekiston (998) telefon raqamlari qabul qilinadi.\n\n"
+    "Telefon raqamingizni XXXXXXXXX yoki 998XXXXXXXXX formatida qo‘lda kiriting."
+)
+
+ASK_PASSPORT = (
+    "3️⃣ Pasport seriya va raqamingizni kiriting.\n\n"
+    "Format:\n\n"
+    "AA1234567\n\n"
+    "Ya’ni:\n"
+    "• 2 ta katta LOTIN harfi\n"
+    "• 7 ta raqam\n\n"
+    "⚠️ Misol faqat formatni tushuntirish uchun."
+)
+INVALID_PASSPORT = (
+    "❌ Pasport seriya va raqami noto‘g‘ri formatda.\n\n"
+    "To‘g‘ri format:\n\n"
+    "XX1234567\n\n"
+    "Ya’ni:\n"
+    "2 ta katta lotin harfi + 7 ta raqam.\n\n"
+    "Iltimos, qaytadan kiriting."
+)
+
+TEXT_REQUIRED = "❌ Iltimos, ushbu bosqich uchun kerakli ma’lumotni matn ko‘rinishida yuboring."
+REGISTRATION_IN_PROGRESS = "ℹ️ Ro‘yxatdan o‘tish jarayoni davom etmoqda. Joriy bosqichni yakunlang."
+CANCELLED = "❌ Ro‘yxatdan o‘tish bekor qilindi. Kiritilgan ma’lumotlar o‘chirildi."
+SEARCHING = "🔎 Ma’lumotlaringiz tekshirilmoqda..."
+STILL_SEARCHING = "⏳ Ma’lumotlaringiz tekshirilmoqda, iltimos kuting."
+CHOOSE_BUTTON = "ℹ️ Iltimos, quyidagi tugmalardan birini tanlang."
+STALE_BUTTON = "Bu tugma eskirgan. Iltimos, /start buyrug‘ini yuboring."
+SERVICE_UNAVAILABLE = (
+    "⚠️ Hozircha ma’lumotlarni tekshirib bo‘lmadi. "
+    "Birozdan so‘ng «✅ Tasdiqlash» tugmasini qayta bosing."
+)
+
+NOT_FOUND = (
+    "❌ Siz kiritgan ma’lumotlar bo‘yicha talaba topilmadi.\n\n"
+    "Iltimos, quyidagilarni tekshiring:\n\n"
+    "• Ism va familiya\n"
+    "• Telefon raqami\n"
+    "• Pasport seriya va raqami\n\n"
+    "Agar barcha ma’lumotlar to‘g‘ri bo‘lsa, universitet mas’ul xodimiga murojaat qiling."
+)
+
+
+def confirm_data(full_name: str, phone: str, passport: str) -> str:
+    return (
+        "🔎 Kiritilgan ma’lumotlaringiz:\n\n"
+        f"👤 F.I.Sh.: {full_name}\n\n"
+        f"📱 Telefon: {phone}\n\n"
+        f"🪪 Pasport: {passport}\n\n"
+        "Ma’lumotlaringizni tasdiqlaysizmi?"
+    )
+
+
+def result_message(full_name: str, hemis_id: str, passport: str, direction: str) -> str:
+    return (
+        f"🎓 Hurmatli {full_name}!\n\n"
+        "Sizning Qarshi xalqaro universiteti HEMIS Student axborot tizimidagi talaba ID raqamingiz aniqlandi.\n\n"
+        f"🪪 TALABA ID: {hemis_id}\n"
+        f"🔑 Boshlang‘ich parol: {passport}\n"
+        f"🌐 Sayt: {STUDENT_SITE_URL}\n"
+        f"👤 F.I.Sh.: {full_name}\n"
+        f"📚 Yo‘nalish: {direction or '—'}\n\n"
+        "📌 Tizimga kirish tartibi:\n\n"
+        "* Login: Sizga berilgan talaba ID raqami.\n"
+        "* Parol: Pasportingizning seriya va raqami.\n\n"
+        "⚠️ Muhim: Tizimga birinchi marta kirganingizdan so‘ng xavfsizlik maqsadida "
+        "parolingizni albatta almashtiring.\n\n"
+        "Hurmat bilan,\n"
+        "Qarshi xalqaro universiteti ma’muriyati."
+    )
+
+
+def already_registered(hemis_id: str) -> str:
+    return (
+        "ℹ️ Siz avval ro‘yxatdan o‘tgansiz.\n\n"
+        f"🆔 HEMIS ID: {hemis_id}\n\n"
+        "Student tizimiga kirish:\n"
+        f"{STUDENT_SITE_NAME}"
+    )
+
+
+# ======================================================================
+# TUGMALAR
+# ======================================================================
+
+CB_REGISTER = "reg:start"
+CB_REREGISTER = "reg:restart"
+CB_CONFIRM = "reg:confirm"
+CB_EDIT = "reg:edit"
+CB_CANCEL = "reg:cancel"
+
+PHONE_BUTTON_TEXT = "📱 Telefon raqamni yuborish"
+
+REMOVE = ReplyKeyboardRemove()
+
+
+def register_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📝 Ro‘yxatdan o‘tish", callback_data=CB_REGISTER)],
+    ])
+
+
+def phone_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=PHONE_BUTTON_TEXT, request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+def confirm_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Tasdiqlash", callback_data=CB_CONFIRM)],
+        [InlineKeyboardButton(text="✏️ Qayta kiritish", callback_data=CB_EDIT)],
+        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data=CB_CANCEL)],
+    ])
+
+
+def site_and_reregister_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌐 Student tizimiga kirish", url=STUDENT_SITE_URL)],
+        [InlineKeyboardButton(text="🔄 Qayta ro‘yxatdan o‘tish", callback_data=CB_REREGISTER)],
+    ])
+
+
+def reregister_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔄 Qayta ro‘yxatdan o‘tish", callback_data=CB_REREGISTER)],
+    ])
+
+
+# ======================================================================
+# HANDLERLAR: ro'yxatdan o'tish
+# ======================================================================
+
+registration_router = Router(name="registration")
+
+
+async def begin_registration(message: Message, state: FSMContext) -> None:
+    """Eski vaqtinchalik ma'lumotlarni tozalab, 1-bosqichdan boshlaydi."""
+    await state.clear()
+    await state.set_state(Registration.waiting_name)
+    await message.answer(ASK_NAME, reply_markup=REMOVE)
+
+
+async def send_step_prompt(message: Message, state: FSMContext) -> None:
+    """Foydalanuvchi turgan bosqich savolini qayta yuboradi."""
+    current = await state.get_state()
+    if current == Registration.waiting_name.state:
+        await message.answer(ASK_NAME, reply_markup=REMOVE)
+    elif current == Registration.waiting_phone.state:
+        await message.answer(ASK_PHONE, reply_markup=phone_kb())
+    elif current == Registration.waiting_passport.state:
+        await message.answer(ASK_PASSPORT, reply_markup=REMOVE)
+    elif current == Registration.confirming_data.state:
+        await send_confirmation(message, state)
+
+
+async def send_confirmation(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    await message.answer(
+        confirm_data(display_name(data["full_name"]), data["phone"], data["passport"]),
+        reply_markup=confirm_kb(),
+    )
+
+
+# ---------------- 1. F.I.Sh. ----------------
+
+@registration_router.message(Registration.waiting_name, F.text)
+async def process_name(message: Message, state: FSMContext) -> None:
+    full_name = validate_name(message.text)
+    if not full_name:
+        await message.answer(INVALID_NAME)
+        return
+    await state.update_data(full_name=full_name)
+    await state.set_state(Registration.waiting_phone)
+    await message.answer(ASK_PHONE, reply_markup=phone_kb())
+
+
+# ---------------- 2. Telefon ----------------
+
+@registration_router.message(Registration.waiting_phone, F.contact)
+async def process_contact(message: Message, state: FSMContext) -> None:
+    contact = message.contact
+    # Faqat foydalanuvchining o'z Telegram akkauntiga tegishli raqam qabul qilinadi
+    if not message.from_user or contact.user_id != message.from_user.id:
+        await message.answer(FOREIGN_CONTACT, reply_markup=phone_kb())
+        return
+    phone = normalize_phone(contact.phone_number)
+    if not phone:
+        await message.answer(UNSUPPORTED_CONTACT, reply_markup=phone_kb())
+        return
+    await _accept_phone(message, state, phone)
+
+
+@registration_router.message(Registration.waiting_phone, F.text)
+async def process_phone_text(message: Message, state: FSMContext) -> None:
+    phone = validate_phone(message.text)
+    if not phone:
+        await message.answer(INVALID_PHONE, reply_markup=phone_kb())
+        return
+    await _accept_phone(message, state, phone)
+
+
+async def _accept_phone(message: Message, state: FSMContext, phone: str) -> None:
+    await state.update_data(phone=phone)
+    await state.set_state(Registration.waiting_passport)
+    await message.answer(ASK_PASSPORT, reply_markup=REMOVE)
+
+
+# ---------------- 3. Pasport ----------------
+
+@registration_router.message(Registration.waiting_passport, F.text)
+async def process_passport(message: Message, state: FSMContext) -> None:
+    passport = validate_passport(message.text)
+    if not passport:
+        await message.answer(INVALID_PASSPORT)
+        return
+    await state.update_data(passport=passport)
+    await state.set_state(Registration.confirming_data)
+    await send_confirmation(message, state)
+
+
+# ---------------- 4. Tasdiqlash: qayta kiritish / bekor qilish ----------------
+
+@registration_router.callback_query(F.data == CB_EDIT, Registration.confirming_data)
+async def edit_data(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await begin_registration(callback.message, state)
+
+
+@registration_router.callback_query(F.data == CB_CANCEL, Registration.confirming_data)
+async def cancel_registration(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.answer()
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer(CANCELLED, reply_markup=REMOVE)
+    await callback.message.answer(WELCOME, reply_markup=register_kb())
+
+
+@registration_router.message(Registration.confirming_data)
+async def confirmation_expected(message: Message, state: FSMContext) -> None:
+    await message.answer(CHOOSE_BUTTON)
+    await send_confirmation(message, state)
+
+
+# ======================================================================
+# HANDLERLAR: talabani topish va HEMIS ID berish
+# ======================================================================
+
+student_router = Router(name="student")
+
+
+@student_router.callback_query(F.data == CB_CONFIRM, Registration.confirming_data)
+async def confirm_and_search(callback: CallbackQuery, state: FSMContext,
+                             db: Database, registry: StudentRegistry,
+                             sheets: SheetsSync | None = None) -> None:
+    user = callback.from_user
+    message = callback.message
+    data = await state.get_data()
+
+    # Ikki marta bosilishining oldini olish
+    await state.set_state(Registration.searching_student)
+    await callback.answer()
+    await message.edit_reply_markup(reply_markup=None)
+    await message.answer(SEARCHING)
+
+    try:
+        student = await asyncio.to_thread(
+            registry.find_student, data["full_name"], data["phone"], data["passport"]
+        )
+    except ExcelDataError as e:
+        logger.error("Excel bilan ishlashda xatolik (user_id=%s): %s", user.id, e)
+        await state.set_state(Registration.confirming_data)
+        await message.answer(SERVICE_UNAVAILABLE, reply_markup=confirm_kb())
+        return
+    except Exception:
+        logger.exception("Talabani qidirishda kutilmagan xatolik (user_id=%s)", user.id)
+        await state.set_state(Registration.confirming_data)
+        await message.answer(SERVICE_UNAVAILABLE, reply_markup=confirm_kb())
+        return
+
+    if student is None:
+        logger.info("Talaba topilmadi (user_id=%s)", user.id)
+        await state.clear()
+        await message.answer(NOT_FOUND, reply_markup=reregister_kb())
+        return
+
+    # HEMIS ID Excel'dagi qiymatning o'zi
+    hemis_id = student.hemis_id
+    # Ism bazadagi to'liq ko'rinishda (bo'lmasa foydalanuvchi kiritgani)
+    full_name = display_name(student.full_name or data["full_name"])
+    await asyncio.to_thread(
+        db.save_user, user.id, user.username, data["full_name"],
+        data["phone"], data["passport"], hemis_id,
+    )
+    await state.clear()
+    logger.info("Ro'yxatdan o'tdi (user_id=%s, hemis_id=%s)", user.id, mask_value(hemis_id))
+    if sheets:
+        sheets.trigger()
+
+    await message.answer(
+        result_message(full_name, hemis_id, data["passport"], student.direction),
+        reply_markup=site_and_reregister_kb(),
+    )
+
+
+# ======================================================================
+# HANDLERLAR: /start, qayta ro'yxatdan o'tish, boshqa xabarlar
+# ======================================================================
+
+start_router = Router(name="start")
+# Boshqa routerlar ishlamagan xabarlar uchun (eng oxirida ulanadi)
+fallback_router = Router(name="fallback")
+
+
+async def show_home(message: Message, user_id: int, db: Database) -> None:
+    """Ro'yxatdan o'tgan bo'lsa HEMIS IDni, aks holda boshlang'ich menyuni ko'rsatadi."""
+    registered = await asyncio.to_thread(db.get_user, user_id)
+    if registered:
+        await message.answer(
+            already_registered(registered.hemis_id),
+            reply_markup=site_and_reregister_kb(),
+        )
+    else:
+        await message.answer(WELCOME, reply_markup=register_kb())
+
+
+@start_router.message(CommandStart())
+async def start_handler(message: Message, state: FSMContext, db: Database) -> None:
+    current = await state.get_state()
+    if current == Registration.searching_student.state:
+        await message.answer(STILL_SEARCHING)
+        return
+    if current in {s.state for s in IN_PROGRESS_STATES}:
+        await message.answer(REGISTRATION_IN_PROGRESS)
+        await send_step_prompt(message, state)
+        return
+    await state.clear()
+    await show_home(message, message.from_user.id, db)
+
+
+@start_router.message(Command("cancel"), StateFilter(*IN_PROGRESS_STATES))
+async def cancel_command(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(CANCELLED, reply_markup=REMOVE)
+    await message.answer(WELCOME, reply_markup=register_kb())
+
+
+@start_router.callback_query(F.data.in_({CB_REGISTER, CB_REREGISTER}))
+async def register_button(callback: CallbackQuery, state: FSMContext) -> None:
+    if await state.get_state() == Registration.searching_student.state:
+        await callback.answer(STILL_SEARCHING, show_alert=True)
+        return
+    await callback.answer()
+    await begin_registration(callback.message, state)
+
+
+# ---------------- Fallback ----------------
+
+@fallback_router.message(Registration.searching_student)
+async def while_searching(message: Message) -> None:
+    await message.answer(STILL_SEARCHING)
+
+
+@fallback_router.message(StateFilter(*IN_PROGRESS_STATES))
+async def non_text_input(message: Message) -> None:
+    """Rasm, video, stiker, ovozli xabar, fayl va h.k. yuborilganda."""
+    await message.answer(TEXT_REQUIRED)
+
+
+@fallback_router.message()
+async def idle_message(message: Message, db: Database) -> None:
+    if not message.from_user:
+        return
+    await show_home(message, message.from_user.id, db)
+
+
+@fallback_router.callback_query()
+async def stale_callback(callback: CallbackQuery) -> None:
+    await callback.answer(STALE_BUTTON, show_alert=True)
+
+
+# ======================================================================
+# DISPATCHER
+# ======================================================================
+
+db = Database(DATABASE_FILE)
+sheets = create_sheets_sync(db, SHEETS_WEBHOOK_URL, SHEETS_SECRET, SHEETS_SYNC_INTERVAL)
 dp = Dispatcher(storage=SQLiteStorage(db), db=db, registry=registry, sheets=sheets)
-dp.include_routers(start.router, registration.router, student.router, start.fallback_router)
+dp.include_routers(start_router, registration_router, student_router, fallback_router)
+
+
+# ======================================================================
+# VEB-SAHIFA, WEBHOOK VA ISHGA TUSHIRISH
+# ======================================================================
 
 # ---------------- Veb-sahifa (natija tekshirish sayti) ----------------
 
@@ -283,8 +1444,8 @@ async def health(request):
 # ---------------- Webhook / polling ishga tushirish ----------------
 
 async def on_startup(bot: Bot):
-    if config.WEBHOOK_URL:
-        await bot.set_webhook(config.WEBHOOK_URL, secret_token=config.WEBHOOK_SECRET,
+    if WEBHOOK_URL:
+        await bot.set_webhook(WEBHOOK_URL, secret_token=WEBHOOK_SECRET,
                               drop_pending_updates=True)
         logger.info("Webhook o'rnatildi")
     else:
@@ -295,7 +1456,7 @@ async def on_startup(bot: Bot):
 
 
 async def on_shutdown(bot: Bot):
-    if config.WEBHOOK_URL:
+    if WEBHOOK_URL:
         await bot.delete_webhook()
     if sheets:
         await sheets.stop()
@@ -311,17 +1472,17 @@ def main():
     logging.getLogger("aiogram.event").setLevel(logging.WARNING)
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
 
-    if not config.BOT_TOKEN:
+    if not BOT_TOKEN:
         raise SystemExit("BOT_TOKEN topilmadi. Uni .env faylga yoki environment o'zgaruvchisiga yozing.")
-    bot = Bot(token=config.BOT_TOKEN)
+    bot = Bot(token=BOT_TOKEN)
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
 
-    if config.WEBHOOK_URL:
+    if WEBHOOK_URL:
         # Web Service rejimi: Render port kutadi, shu sabab webhook ishlatamiz
         app = web.Application()
-        SimpleRequestHandler(dispatcher=dp, bot=bot, secret_token=config.WEBHOOK_SECRET).register(
-            app, path=config.WEBHOOK_PATH
+        SimpleRequestHandler(dispatcher=dp, bot=bot, secret_token=WEBHOOK_SECRET).register(
+            app, path=WEBHOOK_PATH
         )
         setup_application(app, dp, bot=bot)
 
@@ -330,7 +1491,7 @@ def main():
         app.router.add_get("/api/check", api_check)
         app.router.add_get("/health", health)
 
-        web.run_app(app, host="0.0.0.0", port=config.PORT, access_log=None)
+        web.run_app(app, host="0.0.0.0", port=PORT, access_log=None)
     else:
         # Lokal ishga tushirish uchun polling
         asyncio.run(dp.start_polling(bot))

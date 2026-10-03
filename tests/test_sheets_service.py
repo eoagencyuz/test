@@ -4,8 +4,8 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
-from database.database import Database
-from services.sheets_service import SheetsSync, create_sheets_sync
+from bot import Database
+from bot import SheetsSync, create_sheets_sync
 
 SECRET = "test-secret"
 

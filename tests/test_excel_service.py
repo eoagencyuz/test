@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from services.excel_service import (
+from bot import (
     ExcelDataError,
     StudentRegistry,
     find_hemis_id_column,
@@ -38,7 +38,7 @@ def test_find_name_columns():
 
 
 def test_direction_column(excel_file):
-    from services.excel_service import find_direction_column
+    from bot import find_direction_column
     for header in ("Yo'nalish", "Ta’lim yo‘nalishi", "Mutaxassislik", "Specialty"):
         assert find_direction_column(["F.I.Sh.", header]) == 1
     s = StudentRegistry(excel_file).find_student("TESTOV ALPHA", "998901112233", "TT1111111")

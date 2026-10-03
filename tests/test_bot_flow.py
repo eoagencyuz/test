@@ -10,8 +10,8 @@ from aiogram.methods import AnswerCallbackQuery, EditMessageReplyMarkup, SendMes
 from aiogram.types import Chat, Message, Update
 
 import bot as bot_module
-from database.database import Database, SQLiteStorage
-from services.excel_service import StudentRegistry
+from bot import Database, SQLiteStorage
+from bot import StudentRegistry
 
 USER_ID = 1001
 _ids = itertools.count(1)
@@ -291,7 +291,7 @@ async def test_web_api(excel_file):
 
 async def test_registration_is_sent_to_sheets(client):
     from tests.test_sheets_service import SECRET, FakeAppsScript
-    from services.sheets_service import SheetsSync
+    from bot import SheetsSync
 
     fake = FakeAppsScript()
     await fake.server.start_server()
