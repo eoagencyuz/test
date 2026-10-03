@@ -64,6 +64,19 @@ Botdan faqat kanal a'zolari foydalanishi uchun:
 A'zo bo'lmagan foydalanuvchiga bot "Kanalga a'zo bo'ling" xabarini va «✅ Tekshirish» tugmasini ko'rsatadi.
 Standart kanal `@kiu_uz`; tekshiruvni o'chirish uchun `REQUIRED_CHANNEL=off`.
 
+## Rassilka (adminlar uchun)
+
+1. Botga `/id` yozing — bot Telegram ID raqamingizni aytadi.
+2. Render → Environment: `ADMIN_IDS=123456789` (bir nechta admin bo'lsa vergul bilan).
+3. Botga `/rassilka` yozing, xabarni yuboring (matn, rasm, video yoki fayl).
+   Matnda `{ism}` — talabaning ismi, `{fio}` — to'liq F.I.Sh. bilan almashtiriladi.
+4. Namunani ko'rib, kimga yuborishni tanlang: hammaga / HEMIS ID olganlarga / topilmaganlarga.
+   Oxirida bot nechtasiga yetib borganini aytadi. Bekor qilish: `/bekor`.
+
+Qabul qiluvchilar bot bazasidan olinadi. Apps Script'da `listRows()` bo'lsa (repodagi
+`google_apps_script/registrations.gs`), Google Sheets'dagi ro'yxat ham qo'shiladi — bu Render qayta
+ishga tushib bot bazasi tozalanganda ham hammaga yetib borishini ta'minlaydi.
+
 ## Testlar
 
 ```bash

@@ -23,6 +23,7 @@ from typing import Any
 import aiohttp
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.enums import ChatMemberStatus
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -109,6 +110,11 @@ REQUIRED_CHANNEL = os.environ.get("REQUIRED_CHANNEL", "@kiu_uz").strip()
 if REQUIRED_CHANNEL.lower() in ("off", "no", "0", "-"):
     REQUIRED_CHANNEL = ""
 # Kanal havolasi (tugma uchun). Bo'sh bo'lsa @username dan yasaladi.
+# Rassilka qila oladigan adminlar: Telegram ID'lar vergul bilan (o'z ID'ingizni botga /id yozib bilasiz)
+ADMIN_IDS = {
+    int(x) for x in re.split(r"[,\s]+", os.environ.get("ADMIN_IDS", "")) if x.strip().lstrip("-").isdigit()
+}
+
 REQUIRED_CHANNEL_URL = os.environ.get("REQUIRED_CHANNEL_URL", "").strip() or (
     f"https://t.me/{REQUIRED_CHANNEL[1:]}" if REQUIRED_CHANNEL.startswith("@") else ""
 )
@@ -304,6 +310,10 @@ class Database:
             (telegram_id,),
         )
         return RegisteredUser(*rows[0]) if rows else None
+
+    def all_users(self) -> list[tuple[int, str, str]]:
+        """Rassilka uchun: (telegram_id, F.I.Sh., HEMIS ID)."""
+        return self.execute("SELECT telegram_id, full_name, hemis_id FROM users")
 
     def get_unsynced_users(self, limit: int = 50) -> list[RegisteredUser]:
         """Google Sheets'ga hali yozilmagan foydalanuvchilar."""
@@ -738,6 +748,21 @@ class SheetsSync:
             return False
         return True
 
+    async def fetch_rows(self) -> list[dict] | None:
+        """Jadvaldagi ro'yxatdan o'tganlar (rassilka uchun). Skript buni qo'llamasa yoki xato bo'lsa -- None."""
+        session = await self._get_session()
+        try:
+            async with session.post(self.url, json={"secret": self.secret, "action": "list"}) as resp:
+                if resp.status != 200:
+                    return None
+                body = await resp.json(content_type=None)
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
+            logger.warning("Sheets'dan ro'yxatni o'qib bo'lmadi: %s", type(e).__name__)
+            return None
+        if not isinstance(body, dict) or body.get("ok") is not True or not isinstance(body.get("rows"), list):
+            return None
+        return body["rows"]
+
     async def sync_pending(self) -> int:
         """Yozilmagan barcha foydalanuvchilarni yuboradi. Yuborilganlar sonini qaytaradi."""
         async with self._lock:
@@ -803,6 +828,11 @@ class Registration(StatesGroup):
     waiting_passport = State()
     confirming_data = State()
     searching_student = State()
+
+
+class BroadcastStates(StatesGroup):
+    """Admin rassilkasi: xabarni kutish."""
+    waiting_message = State()
 
 
 IN_PROGRESS_STATES = (
@@ -989,6 +1019,18 @@ def confirm_kb() -> InlineKeyboardMarkup:
 def site_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🌐 Student tizimiga kirish", url=STUDENT_SITE_URL)],
+    ])
+
+
+CB_BC_PREFIX = "bc:"
+
+
+def broadcast_kb(counts: dict[str, int]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"📢 Hammaga ({counts['all']})", callback_data=f"{CB_BC_PREFIX}all")],
+        [InlineKeyboardButton(text=f"✅ HEMIS ID olganlarga ({counts['hemis']})", callback_data=f"{CB_BC_PREFIX}hemis")],
+        [InlineKeyboardButton(text=f"❌ Topilmaganlarga ({counts['nf']})", callback_data=f"{CB_BC_PREFIX}nf")],
+        [InlineKeyboardButton(text="🚫 Bekor qilish", callback_data=f"{CB_BC_PREFIX}cancel")],
     ])
 
 
@@ -1213,6 +1255,185 @@ async def confirm_and_search(callback: CallbackQuery, state: FSMContext,
 # HANDLERLAR: /start, qayta ro'yxatdan o'tish, boshqa xabarlar
 # ======================================================================
 
+# ======================================================================
+# RASSILKA (faqat adminlar uchun)
+# ======================================================================
+
+broadcast_router = Router(name="broadcast")
+BROADCAST_DELAY = 0.05   # xabarlar orasidagi pauza (Telegram limiti: soniyasiga ~30 ta)
+_broadcast_tasks: set[asyncio.Task] = set()
+
+BROADCAST_ASK = (
+    "📨 Rassilka xabarini yuboring.\n\n"
+    "Matnda quyidagilardan foydalanish mumkin:\n"
+    "{ism} — talabaning ismi\n"
+    "{fio} — to‘liq F.I.Sh.\n\n"
+    "Masalan:\n"
+    "Hurmatli {ism}! Ertaga soat 10:00 da ...\n\n"
+    "Rasm, video yoki fayl ham yuborishingiz mumkin (izohida ham {ism} ishlaydi).\n"
+    "Bekor qilish: /bekor"
+)
+
+
+@dataclass(frozen=True)
+class Recipient:
+    telegram_id: int
+    full_name: str
+    hemis_id: str
+
+
+def is_admin(user_id: int | None) -> bool:
+    return user_id is not None and user_id in ADMIN_IDS
+
+
+def first_name(full_name: str) -> str:
+    """'FAMILIYA ISM OTASINING_ISMI' -> 'Ism' (bitta so'z bo'lsa -- o'zi)."""
+    words = display_name(normalize_full_name(full_name)).split()
+    word = words[1] if len(words) > 1 else (words[0] if words else "")
+    return word[:1].upper() + word[1:].lower()
+
+
+def personalize(text: str, recipient: Recipient) -> str:
+    return (text.replace("{ism}", first_name(recipient.full_name))
+                .replace("{fio}", display_name(normalize_full_name(recipient.full_name))))
+
+
+def recipient_group(r: Recipient) -> str:
+    if r.hemis_id == NOT_FOUND_MARK:
+        return "nf"
+    return "hemis" if r.hemis_id and r.hemis_id.isdigit() else "other"
+
+
+async def gather_recipients(db: Database, sheets: "SheetsSync | None") -> tuple[list[Recipient], bool]:
+    """Bot bazasi + (mavjud bo'lsa) Google Sheets'dagi ro'yxat. Ikkinchi qiymat: Sheets o'qildimi."""
+    by_id: dict[int, Recipient] = {}
+    from_sheets = False
+    if sheets:
+        rows = await sheets.fetch_rows()
+        if rows is not None:
+            from_sheets = True
+            for row in rows:
+                tid = str(row.get("telegram_id", "")).strip()
+                if tid.isdigit():
+                    by_id[int(tid)] = Recipient(int(tid), str(row.get("full_name", "")), str(row.get("hemis_id", "")).strip())
+    for tid, full_name, hemis_id in await asyncio.to_thread(db.all_users):
+        by_id[tid] = Recipient(tid, full_name, hemis_id)
+    return list(by_id.values()), from_sheets
+
+
+def select_recipients(recipients: list[Recipient], target: str) -> list[Recipient]:
+    if target == "all":
+        return recipients
+    return [r for r in recipients if recipient_group(r) == target]
+
+
+async def _send_to(bot: Bot, r: Recipient, src: dict) -> None:
+    if src["kind"] == "text":
+        await bot.send_message(r.telegram_id, personalize(src["text"], r))
+    else:
+        caption = personalize(src["caption"], r) if src["caption"] else None
+        await bot.copy_message(r.telegram_id, src["chat_id"], src["message_id"], caption=caption)
+
+
+async def run_broadcast(bot: Bot, admin_chat_id: int, recipients: list[Recipient], src: dict) -> None:
+    sent = failed = 0
+    for r in recipients:
+        for attempt in range(3):
+            try:
+                await _send_to(bot, r, src)
+                sent += 1
+                break
+            except TelegramRetryAfter as e:
+                await asyncio.sleep(e.retry_after + 1)
+            except (TelegramForbiddenError, TelegramBadRequest):
+                failed += 1   # botni bloklagan, akkaunt o'chirilgan va h.k.
+                break
+            except Exception:
+                logger.exception("Rassilka xabari yuborilmadi (user_id=%s)", r.telegram_id)
+                failed += 1
+                break
+        else:
+            failed += 1
+        await asyncio.sleep(BROADCAST_DELAY)
+    logger.info("Rassilka tugadi: yuborildi=%d, yuborilmadi=%d", sent, failed)
+    await bot.send_message(
+        admin_chat_id,
+        f"✅ Rassilka tugadi.\n\n📨 Yuborildi: {sent}\n🚫 Yuborilmadi: {failed} (botni bloklagan yoki akkaunt o‘chirilgan)",
+    )
+
+
+@broadcast_router.message(Command("id"))
+async def my_id(message: Message) -> None:
+    await message.answer(f"Sizning Telegram ID raqamingiz: {message.from_user.id}")
+
+
+@broadcast_router.message(Command("rassilka"), F.from_user.id.func(is_admin))
+async def broadcast_start(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await state.set_state(BroadcastStates.waiting_message)
+    await message.answer(BROADCAST_ASK, reply_markup=REMOVE)
+
+
+@broadcast_router.message(Command("bekor"), BroadcastStates.waiting_message)
+async def broadcast_cancel_command(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer("🚫 Rassilka bekor qilindi.")
+
+
+@broadcast_router.message(BroadcastStates.waiting_message, ~F.text.startswith("/"))
+async def broadcast_message(message: Message, state: FSMContext, db: Database,
+                            sheets: "SheetsSync | None" = None) -> None:
+    if message.text:
+        src = {"kind": "text", "text": message.text}
+    else:
+        src = {"kind": "copy", "chat_id": message.chat.id, "message_id": message.message_id,
+               "caption": message.caption or ""}
+    recipients, from_sheets = await gather_recipients(db, sheets)
+    counts = {"all": len(recipients),
+              "hemis": len(select_recipients(recipients, "hemis")),
+              "nf": len(select_recipients(recipients, "nf"))}
+    await state.update_data(broadcast_src=src)
+
+    sample = recipients[0] if recipients else Recipient(0, "NAMUNA TALABA", "")
+    await message.answer("👀 Talabalar ko‘radigan xabar (namuna):")
+    if src["kind"] == "text":
+        await message.answer(personalize(src["text"], sample))
+    else:
+        caption = personalize(src["caption"], sample) if src["caption"] else None
+        await message.bot.copy_message(message.chat.id, message.chat.id, message.message_id, caption=caption)
+    source_note = "bot bazasi va Google Sheets" if from_sheets else "faqat bot bazasi (Google Sheets o‘qilmadi)"
+    await message.answer(
+        f"Qabul qiluvchilar manbasi: {source_note}.\n\nKimga yuboramiz?",
+        reply_markup=broadcast_kb(counts),
+    )
+
+
+@broadcast_router.callback_query(F.data.startswith(CB_BC_PREFIX), F.from_user.id.func(is_admin))
+async def broadcast_send(callback: CallbackQuery, state: FSMContext, db: Database, bot: Bot,
+                         sheets: "SheetsSync | None" = None) -> None:
+    target = callback.data[len(CB_BC_PREFIX):]
+    data = await state.get_data()
+    src = data.get("broadcast_src")
+    await callback.message.edit_reply_markup(reply_markup=None)
+    if target == "cancel" or not src or await state.get_state() != BroadcastStates.waiting_message.state:
+        await state.clear()
+        await callback.answer()
+        await callback.message.answer("🚫 Rassilka bekor qilindi.")
+        return
+    await state.clear()
+    recipients, _ = await gather_recipients(db, sheets)
+    selected = select_recipients(recipients, target)
+    await callback.answer()
+    await callback.message.answer(f"⏳ Rassilka boshlandi: {len(selected)} ta qabul qiluvchi.")
+    task = asyncio.create_task(run_broadcast(bot, callback.message.chat.id, selected, src))
+    _broadcast_tasks.add(task)
+    task.add_done_callback(_broadcast_tasks.discard)
+
+
+# ======================================================================
+# HANDLERLAR: /start (davomi)
+# ======================================================================
+
 start_router = Router(name="start")
 # Boshqa routerlar ishlamagan xabarlar uchun (eng oxirida ulanadi)
 fallback_router = Router(name="fallback")
@@ -1364,7 +1585,7 @@ class SubscriptionMiddleware(BaseMiddleware):
 dp = Dispatcher(storage=SQLiteStorage(db), db=db, registry=registry, sheets=sheets)
 dp.message.outer_middleware(SubscriptionMiddleware())
 dp.callback_query.outer_middleware(SubscriptionMiddleware())
-dp.include_routers(start_router, registration_router, student_router, fallback_router)
+dp.include_routers(broadcast_router, start_router, registration_router, student_router, fallback_router)
 
 
 # ======================================================================
