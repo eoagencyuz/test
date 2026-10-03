@@ -12,6 +12,7 @@ from aiogram.types import Chat, Message, Update
 import bot as bot_module
 from database.database import Database, SQLiteStorage
 from services.excel_service import StudentRegistry
+from services.faq_service import FaqBase
 
 USER_ID = 1001
 _ids = itertools.count(1)
@@ -45,6 +46,12 @@ class Client:
         self.bot = Bot(token="42:TEST", session=self.session)
         self.dp = bot_module.dp
         self.excel_file = excel_file
+        self.faq_file = tmp_path / "faq.txt"
+        self.faq_file.write_text(
+            "## Parolni unutdim\nKalit so'zlar: unutdim, parolni unut\nDekanatga murojaat qiling.\n\n"
+            "## Student tizimi\nKalit so'zlar: student, kirish\nstudent.kiu.uz saytiga kiring.\n",
+            encoding="utf-8",
+        )
         self.restart()
 
     def restart(self):
@@ -53,6 +60,7 @@ class Client:
         self.dp.fsm.storage = SQLiteStorage(self.db)
         self.dp["db"] = self.db
         self.dp["registry"] = StudentRegistry(self.excel_file)
+        self.dp["faq"] = FaqBase(self.faq_file)
 
     def _base(self):
         return {"message_id": next(_ids), "date": int(datetime.now().timestamp()),
@@ -303,3 +311,38 @@ async def test_registration_is_sent_to_sheets(client):
         client.dp["sheets"] = None
         await sync.stop()
         await fake.server.close()
+
+
+async def test_faq_question_answered(client):
+    out = await client.text("Parolimni unutdim, nima qilay?")
+    assert out == ["Dekanatga murojaat qiling."]
+    assert client.last_markup().inline_keyboard[0][0].callback_data == "faq:list"
+    out = await client.text("Паролимни унутдим")
+    assert out == ["Dekanatga murojaat qiling."]
+
+
+async def test_faq_unknown_question(client):
+    out = await client.text("salom")
+    assert out[0].startswith("🤔 Afsuski")
+    titles = [row[0].text for row in client.last_markup().inline_keyboard]
+    assert titles == ["Parolni unutdim", "Student tizimi"]
+
+
+async def test_faq_buttons(client):
+    out = await client.text("/start")
+    assert client.last_markup().inline_keyboard[1][0].callback_data == "faq:list"
+    out = await client.press("faq:list")
+    assert out[0].startswith("❓ Ko‘p beriladigan savollar")
+    out = await client.press("faq:1")
+    assert out == ["❓ Student tizimi\n\nstudent.kiu.uz saytiga kiring."]
+    assert await client.press("faq:99") == []      # eskirgan tugma
+    out = await client.text("/faq")
+    assert out[0].startswith("❓ Ko‘p beriladigan savollar")
+
+
+async def test_faq_not_used_during_registration(client):
+    await client.press("reg:start")
+    out = await client.text("parolimni unutdim")      # bu ism bosqichida F.I.Sh. sifatida tekshiriladi
+    assert out[0].startswith("2️⃣ Telefon")             # 2 so'z, lotin -> ism sifatida qabul qilinadi
+    out = await client.text("student kirish")
+    assert out[0].startswith("❌ Telefon raqami")

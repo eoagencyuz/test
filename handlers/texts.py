@@ -71,6 +71,14 @@ INVALID_PASSPORT = (
     "Iltimos, qaytadan kiriting."
 )
 
+FAQ_LIST = "❓ Ko‘p beriladigan savollar. Kerakli mavzuni tanlang yoki savolingizni yozib yuboring:"
+FAQ_EMPTY = "ℹ️ Hozircha savol-javoblar ro‘yxati mavjud emas. Universitet mas’ul xodimiga murojaat qiling."
+FAQ_NOT_FOUND = (
+    "🤔 Afsuski, bu savolga tayyor javob topilmadi.\n\n"
+    "Savolingizni boshqacha so‘zlar bilan yozib ko‘ring, quyidagi ro‘yxatdan mavzuni tanlang "
+    "yoki universitet mas’ul xodimiga murojaat qiling."
+)
+
 TEXT_REQUIRED = "❌ Iltimos, ushbu bosqich uchun kerakli ma’lumotni matn ko‘rinishida yuboring."
 REGISTRATION_IN_PROGRESS = "ℹ️ Ro‘yxatdan o‘tish jarayoni davom etmoqda. Joriy bosqichni yakunlang."
 CANCELLED = "❌ Ro‘yxatdan o‘tish bekor qilindi. Kiritilgan ma’lumotlar o‘chirildi."

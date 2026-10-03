@@ -26,6 +26,8 @@ PORT = int(os.environ.get("PORT", 10000))
 # Talabalar ro'yxati (Excel) va ma'lumotlar bazasi
 EXCEL_FILE = _path(os.environ.get("EXCEL_FILE", "data.xlsx"))
 DATABASE_FILE = _path(os.environ.get("DATABASE_FILE", "bot_data.db"))
+# Tayyor savol-javoblar bazasi (oddiy matn fayl, repoda saqlanadi)
+FAQ_FILE = _path(os.environ.get("FAQ_FILE", "faq.txt"))
 
 STUDENT_SITE_URL = "https://student.kiu.uz"
 STUDENT_SITE_NAME = "student.kiu.uz"

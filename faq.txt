@@ -1,0 +1,53 @@
+# Bot savol-javoblar bazasi.
+#
+# Har bir mavzu "## " bilan boshlanadi (tugmada shu nom ko'rinadi).
+# Keyingi qatorda "Kalit so'zlar:" — vergul bilan ajratilgan so'zlar yoki iboralar.
+# Talaba yozgan savolda qaysi mavzuning kalit so'zlari ko'proq uchrasa, o'sha javob yuboriladi.
+# So'z boshi yetarli: "parol" kalit so'zi "parolim", "parolni" so'zlariga ham mos keladi.
+# Bir necha so'zli ibora ("yangi parol") har bir so'zi uchun ball oladi, shuning uchun aniqroq.
+# Ball teng bo'lsa, faylda yuqoriroqda turgan mavzu tanlanadi.
+# Qolgan qatorlar — javob matni.
+#
+# Faylni o'zgartirsangiz, bot qayta ishga tushirilmasdan yangi javoblarni ishlatadi.
+# "#" bilan boshlangan qatorlar (bu kabi) izoh hisoblanadi va talabaga ko'rinmaydi.
+
+## HEMIS IDni qanday bilaman?
+Kalit so'zlar: hemis id, hemis, id, login, raqamim
+HEMIS IDingizni bilish uchun botda ro'yxatdan o'ting: /start buyrug'ini yuboring va «📝 Ro'yxatdan o'tish» tugmasini bosing.
+Ism-familiya, telefon va pasport ma'lumotlaringiz tasdiqlangach, bot HEMIS IDingizni yuboradi.
+
+## Student tizimiga qanday kiraman?
+Kalit so'zlar: student kiu, student, tizim, kirish, kiraman, sayt, kabinet
+🌐 Sayt: student.kiu.uz
+
+🆔 Login: HEMIS ID
+🔐 Parol: pasport seriya va raqamingiz (masalan, XX1234567 ko'rinishida)
+
+⚠️ Birinchi marta kirganingizdan so'ng parolingizni almashtiring.
+
+## Parolni unutdim
+Kalit so'zlar: unutdim, unutib, esimda, esdan, tiklash, parolni tikla, parolni unut, parolim unut
+Agar parolni o'zgartirgan bo'lsangiz va uni unutgan bo'lsangiz, parolni tiklash uchun universitet mas'ul xodimiga (dekanatga) shaxsingizni tasdiqlovchi hujjat bilan murojaat qiling.
+
+## Parolni qanday almashtiraman?
+Kalit so'zlar: almashtir, o'zgartir, yangi parol, parolni almashtir, parolni o'zgartir, parol
+student.kiu.uz saytiga kiring va profil sozlamalaridan parolni o'zgartiring.
+Yangi parolni hech kimga bermang.
+
+## Ma'lumotlarim topilmadi
+Kalit so'zlar: topilmadi, topmadi, chiqmadi, xato, noto'g'ri, ishlamayapti
+Ism-familiya, telefon va pasport ma'lumotlaringizni qaytadan tekshirib ko'ring:
+• ism va familiya lotin harflarida, pasportdagidek yozilishi kerak;
+• telefon — universitetga topshirgan raqamingiz bo'lishi kerak;
+• pasport — 2 ta katta lotin harfi va 7 ta raqam.
+
+Qayta urinish uchun /start buyrug'ini yuboring. Barcha ma'lumotlar to'g'ri bo'lsa, universitet mas'ul xodimiga murojaat qiling.
+
+## Ma'lumotni noto'g'ri kiritdim
+Kalit so'zlar: qayta kirit, qayta ro'yxat, o'zgartirmoqchi, adashib, noto'g'ri kiritdim
+Ro'yxatdan o'tishni qaytadan boshlash uchun /start buyrug'ini yuboring va «🔄 Qayta ro'yxatdan o'tish» tugmasini bosing.
+
+## Bot nima uchun telefon va pasportimni so'raydi?
+Kalit so'zlar: nega, nima uchun, xavfsiz, maxfiy, pasportimni, shaxsiy
+Telefon va pasport ma'lumotlari sizni talabalar ro'yxatidan aniq topish va HEMIS IDni faqat o'zingizga berish uchun kerak.
+Bu ma'lumotlar boshqa foydalanuvchilarga ko'rsatilmaydi.

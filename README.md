@@ -25,6 +25,21 @@ python bot.py
 
 `WEBHOOK_HOST` bo'sh bo'lsa polling, to'ldirilgan bo'lsa webhook + veb-sahifa (`/`, `/api/check`, `/health`) rejimida ishlaydi.
 
+## Savol-javob (faq.txt)
+
+Talaba botga oddiy savol yozsa (ro'yxatdan o'tish jarayonidan tashqari), bot `faq.txt` dagi
+tayyor javoblardan eng mosini kalit so'zlar bo'yicha topib yuboradi. Kirill yozuvidagi savollar ham tushuniladi.
+Mos javob topilmasa, bot javob o'ylab topmaydi: mas'ul xodimga murojaat qilishni aytadi va mavzular ro'yxatini ko'rsatadi.
+«❓ Savol-javob» tugmasi va `/faq` buyrug'i barcha mavzularni ko'rsatadi.
+
+Yangi savol qo'shish uchun `faq.txt` ga shunday bo'lim yozing (bot qayta ishga tushirilmasdan yangilanadi):
+
+```
+## Mavzu nomi
+Kalit so'zlar: so'z1, so'z2, ikki so'zli ibora
+Javob matni.
+```
+
 ## Ro'yxatdan o'tganlarni Google Sheets'ga yozish (ixtiyoriy)
 
 Har bir ro'yxatdan o'tgan talaba avval bot bazasiga, keyin Google Sheets'ga yoziladi

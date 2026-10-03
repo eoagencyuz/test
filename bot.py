@@ -7,8 +7,10 @@ from aiohttp import web
 
 import config
 from database.database import Database, SQLiteStorage
+from handlers import faq as faq_handlers
 from handlers import registration, start, student
 from services.excel_service import ExcelDataError, registry
+from services.faq_service import FaqBase
 from services.sheets_service import create_sheets_sync
 from services.validation_service import display_name, validate_passport, validate_phone
 
@@ -16,8 +18,11 @@ logger = logging.getLogger(__name__)
 
 db = Database(config.DATABASE_FILE)
 sheets = create_sheets_sync(db, config.SHEETS_WEBHOOK_URL, config.SHEETS_SECRET, config.SHEETS_SYNC_INTERVAL)
-dp = Dispatcher(storage=SQLiteStorage(db), db=db, registry=registry, sheets=sheets)
-dp.include_routers(start.router, registration.router, student.router, start.fallback_router)
+faq = FaqBase(config.FAQ_FILE)
+dp = Dispatcher(storage=SQLiteStorage(db), db=db, registry=registry, sheets=sheets, faq=faq)
+dp.include_routers(
+    start.router, registration.router, student.router, faq_handlers.router, start.fallback_router
+)
 
 # ---------------- Veb-sahifa (natija tekshirish sayti) ----------------
 
