@@ -407,8 +407,8 @@ async def test_channel_check_resumes_registration_step(client, required_channel)
     assert out[0].startswith("1️⃣ Ism va familiyangizni")
 
 
-async def test_channel_check_disabled_by_default(client):
-    assert bot_module.REQUIRED_CHANNEL == ""
+async def test_channel_check_can_be_turned_off(client):
+    assert bot_module.REQUIRED_CHANNEL == ""   # REQUIRED_CHANNEL=off
     client.session.channel_member = False
     out = await client.text("/start")
     assert out[0].startswith("Assalomu alaykum!")
