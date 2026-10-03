@@ -164,13 +164,13 @@ async def test_full_registration_flow(client):
     assert out[0] == "🔎 Ma’lumotlaringiz tekshirilmoqda..."
     assert len(out) == 2
     result = out[1]
-    assert result.startswith("🎓 Hurmatli TESTOV ALPHA BETA O‘G‘LI!\n\n")
+    assert result.startswith("Hurmatli TESTOV ALPHA BETA O‘G‘LI!\n\n")
     assert "🪪 TALABA ID: 300000000001\n" in result
     assert "🔑 Boshlang‘ich parol: TT1111111\n" in result
     assert "🌐 Sayt: https://student.kiu.uz\n" in result
     assert "👤 F.I.Sh.: TESTOV ALPHA BETA O‘G‘LI\n" in result
     assert "📚 Yo‘nalish: Test yo‘nalishi\n" in result
-    assert result.endswith("Hurmat bilan,\nQarshi xalqaro universiteti ma’muriyati.")
+    assert result.endswith("parolingizni albatta almashtiring.")
     assert client.last_markup().inline_keyboard[0][0].url == "https://student.kiu.uz"
     assert await client.state() is None
 
@@ -355,5 +355,5 @@ async def test_wrong_name_but_correct_passport(client):
     # Bazaga talaba yozgan xato ism emas, ro'yxatdagi to'g'ri ism saqlanadi
     assert client.db.get_user(USER_ID).full_name == "TESTOV ALPHA BETA O'G'LI"
     # Salomlashuvda bazadagi to'g'ri ism ishlatiladi
-    assert out[1].startswith("🎓 Hurmatli TESTOV ALPHA BETA O‘G‘LI!")
+    assert out[1].startswith("Hurmatli TESTOV ALPHA BETA O‘G‘LI!")
     assert "🪪 TALABA ID: 300000000001" in out[1]
