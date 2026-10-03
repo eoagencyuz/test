@@ -141,9 +141,15 @@ async def test_full_registration_flow(client):
 
     out = await client.press("reg:confirm")                                           # TEST 11
     assert out[0] == "🔎 Ma’lumotlaringiz tekshirilmoqda..."
-    assert out[1].startswith("✅ Ma’lumotlaringiz tasdiqlandi!") and "🆔 HEMIS ID: 300000000001" in out[1]
-    assert "Login: 300000000001" in out[2] and "Parol: TT1111111" in out[2]
-    assert out[3].startswith("✅ Ro‘yxatdan o‘tish yakunlandi!")
+    assert len(out) == 2
+    result = out[1]
+    assert result.startswith("🎓 Hurmatli TESTOV ALPHA BETA O‘G‘LI!\n\n")
+    assert "🪪 TALABA ID: 300000000001\n" in result
+    assert "🔑 Boshlang‘ich parol: TT1111111\n" in result
+    assert "🌐 Sayt: https://student.kiu.uz\n" in result
+    assert "👤 F.I.Sh.: TESTOV ALPHA BETA O‘G‘LI\n" in result
+    assert "📚 Yo‘nalish: Test yo‘nalishi\n" in result
+    assert result.endswith("Hurmat bilan,\nQarshi xalqaro universiteti ma’muriyati.")
     assert client.last_markup().inline_keyboard[0][0].url == "https://student.kiu.uz"
     assert await client.state() is None
 
@@ -181,7 +187,8 @@ async def test_not_found_gives_no_hemis_id(client):                             
 async def test_same_name_students(client):                                            # TEST 13
     await fill_until_confirm(client, "BIRXIL EPSILON", "905550002", "TQ4444444")
     out = await client.press("reg:confirm")
-    assert "🆔 HEMIS ID: 300000000004" in out[1]
+    assert "🪪 TALABA ID: 300000000004" in out[1]
+    assert "📚 Yo‘nalish: —\n" in out[1]   # Excel'da yo'nalish bo'sh bo'lsa
 
 
 async def test_start_during_registration_and_after(client):                           # TEST 14

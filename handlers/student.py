@@ -55,7 +55,8 @@ async def confirm_and_search(callback: CallbackQuery, state: FSMContext,
 
     # HEMIS ID Excel'dagi qiymatning o'zi
     hemis_id = student.hemis_id
-    full_name = display_name(data["full_name"])
+    # Ism bazadagi to'liq ko'rinishda (bo'lmasa foydalanuvchi kiritgani)
+    full_name = display_name(student.full_name or data["full_name"])
     await asyncio.to_thread(
         db.save_user, user.id, user.username, data["full_name"],
         data["phone"], data["passport"], hemis_id,
@@ -65,6 +66,7 @@ async def confirm_and_search(callback: CallbackQuery, state: FSMContext,
     if sheets:
         sheets.trigger()
 
-    await message.answer(texts.verified(full_name, data["phone"], data["passport"], hemis_id))
-    await message.answer(texts.login_instructions(hemis_id, data["passport"]), reply_markup=kb.site_kb())
-    await message.answer(texts.completed(hemis_id), reply_markup=kb.site_and_reregister_kb())
+    await message.answer(
+        texts.result_message(full_name, hemis_id, data["passport"], student.direction),
+        reply_markup=kb.site_and_reregister_kb(),
+    )

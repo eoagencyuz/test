@@ -1,5 +1,5 @@
 """Bot xabarlari. Barcha raqam va ismlar faqat format namunasi."""
-from config import STUDENT_SITE_NAME
+from config import STUDENT_SITE_NAME, STUDENT_SITE_URL
 
 WELCOME = (
     "Assalomu alaykum! 👋\n\n"
@@ -103,48 +103,22 @@ def confirm_data(full_name: str, phone: str, passport: str) -> str:
     )
 
 
-def verified(full_name: str, phone: str, passport: str, hemis_id: str) -> str:
+def result_message(full_name: str, hemis_id: str, passport: str, direction: str) -> str:
     return (
-        "✅ Ma’lumotlaringiz tasdiqlandi!\n\n"
-        f"👤 F.I.Sh.: {full_name}\n\n"
-        f"📱 Telefon: {phone}\n\n"
-        f"🪪 Pasport: {passport}\n\n"
-        f"🆔 HEMIS ID: {hemis_id}"
-    )
-
-
-def login_instructions(hemis_id: str, passport: str) -> str:
-    return (
-        "🎓 HEMIS IDingiz muvaffaqiyatli aniqlandi!\n\n"
-        "Endi Student tizimiga kirishingiz mumkin.\n\n"
-        "🌐 Sayt:\n"
-        f"{STUDENT_SITE_NAME}\n\n"
-        "Kirish ma’lumotlari:\n\n"
-        "🆔 Login:\n"
-        "Sizga berilgan HEMIS ID\n\n"
-        "🔐 Parol:\n"
-        "Pasport seriya va raqamingiz\n\n"
-        "Masalan:\n\n"
-        f"Login: {hemis_id}\n"
-        f"Parol: {passport}\n\n"
-        "⚠️ MUHIM:\n"
-        "Tizimga birinchi marta kirganingizdan so‘ng xavfsizlik sababli parolingizni almashtiring.\n\n"
-        "Yangi parolingizni hech kimga bermang."
-    )
-
-
-def completed(hemis_id: str) -> str:
-    return (
-        "✅ Ro‘yxatdan o‘tish yakunlandi!\n\n"
-        "Sizning HEMIS IDingiz:\n\n"
-        f"🆔 {hemis_id}\n\n"
-        "Student tizimiga kirish:\n\n"
-        f"🌐 {STUDENT_SITE_NAME}\n\n"
-        "Kirish:\n\n"
-        "🆔 Login: HEMIS ID\n"
-        "🔐 Parol: Pasport seriya va raqami\n\n"
-        "⚠️ Birinchi marta kirganingizdan keyin parolingizni almashtiring.\n\n"
-        "Omad tilaymiz! 🎓"
+        f"🎓 Hurmatli {full_name}!\n\n"
+        "Sizning Qarshi xalqaro universiteti HEMIS Student axborot tizimidagi talaba ID raqamingiz aniqlandi.\n\n"
+        f"🪪 TALABA ID: {hemis_id}\n"
+        f"🔑 Boshlang‘ich parol: {passport}\n"
+        f"🌐 Sayt: {STUDENT_SITE_URL}\n"
+        f"👤 F.I.Sh.: {full_name}\n"
+        f"📚 Yo‘nalish: {direction or '—'}\n\n"
+        "📌 Tizimga kirish tartibi:\n\n"
+        "* Login: Sizga berilgan talaba ID raqami.\n"
+        "* Parol: Pasportingizning seriya va raqami.\n\n"
+        "⚠️ Muhim: Tizimga birinchi marta kirganingizdan so‘ng xavfsizlik maqsadida "
+        "parolingizni albatta almashtiring.\n\n"
+        "Hurmat bilan,\n"
+        "Qarshi xalqaro universiteti ma’muriyati."
     )
 
 

@@ -35,6 +35,7 @@ class Student:
     phones: frozenset     # 998XXXXXXXXX ko'rinishidagi raqamlar
     passport: str         # standartlashtirilgan pasport
     hemis_id: str         # Excel'dagi qiymat (o'zgartirilmagan)
+    direction: str = ""   # ta'lim yo'nalishi (Excel'da bo'lsa)
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ class Columns:
     surname: int | None
     first_name: int | None
     patronymic: int | None
+    direction: int | None = None
 
 
 def _header_key(value) -> str:
@@ -83,6 +85,15 @@ def find_phone_column(headers: list) -> int | None:
     return None
 
 
+def find_direction_column(headers: list) -> int | None:
+    """'Yo'nalish', 'Ta'lim yo'nalishi', 'Mutaxassislik', 'Specialty' kabi ustunni topadi."""
+    for i, h in enumerate(headers):
+        key = _header_key(h)
+        if "yonalish" in key or "mutaxassislik" in key or key in ("specialty", "direction", "speciality"):
+            return i
+    return None
+
+
 def find_name_columns(headers: list) -> dict:
     """F.I.Sh. ustunini (yoki alohida Familiya / Ism / Otasining ismi ustunlarini) topadi."""
     result = {"full_name": None, "surname": None, "first_name": None, "patronymic": None}
@@ -114,6 +125,7 @@ def detect_columns(headers: list) -> Columns | None:
         hemis=hemis,
         passport=find_passport_column(headers),
         phone=find_phone_column(headers),
+        direction=find_direction_column(headers),
         **names,
     )
 
@@ -180,11 +192,15 @@ def load_students(path: Path) -> list[Student]:
                 phones = frozenset()
                 if cols.phone is not None and cols.phone < len(row):
                     phones = _row_phones(row[cols.phone])
+                direction = ""
+                if cols.direction is not None and cols.direction < len(row):
+                    direction = " ".join(_cell_text(row[cols.direction]).split())
                 students.append(Student(
                     full_name=_row_name(row, cols),
                     phones=phones,
                     passport=passport,
                     hemis_id=hemis_id,
+                    direction=direction,
                 ))
     finally:
         workbook.close()

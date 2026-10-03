@@ -16,9 +16,9 @@ os.environ["EXCEL_FILE"] = str(_TMP / "missing.xlsx")
 os.environ["BOT_TOKEN"] = ""
 
 # Soxta (synthetic) talabalar: faqat test uchun, real ma'lumot emas
-HEADERS = ["№", "F.I.Sh.", "Telefon raqam", "Pasport seriya va raqami", "HEMIS ID"]
+HEADERS = ["№", "F.I.Sh.", "Telefon raqam", "Pasport seriya va raqami", "HEMIS ID", "Ta'lim yo'nalishi"]
 ROWS = [
-    [1, "TESTOV ALPHA BETA O‘G‘LI", "901112233", "TT 1111111", 300000000001],
+    [1, "TESTOV ALPHA BETA O‘G‘LI", "901112233", "TT 1111111", 300000000001, "Test  yo‘nalishi"],
     [2, "SINOVOVA GAMMA DELTA QIZI", "+998 93 444 55 66", "TS2222222", "300000000002"],
     # Bir xil ism-familiyali ikki talaba
     [3, "BIRXIL EPSILON", "905550001", "TQ3333333", 300000000003],

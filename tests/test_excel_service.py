@@ -37,6 +37,14 @@ def test_find_name_columns():
     assert (cols["surname"], cols["first_name"], cols["patronymic"]) == (0, 1, 2)
 
 
+def test_direction_column(excel_file):
+    from services.excel_service import find_direction_column
+    for header in ("Yo'nalish", "Ta’lim yo‘nalishi", "Mutaxassislik", "Specialty"):
+        assert find_direction_column(["F.I.Sh.", header]) == 1
+    s = StudentRegistry(excel_file).find_student("TESTOV ALPHA", "998901112233", "TT1111111")
+    assert s.direction == "Test yo‘nalishi"
+
+
 def test_hemis_id_is_taken_as_is(excel_file):
     students = load_students(excel_file)
     ids = {s.hemis_id for s in students}

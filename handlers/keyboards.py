@@ -41,12 +41,6 @@ def confirm_kb() -> InlineKeyboardMarkup:
     ])
 
 
-def site_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌐 Student tizimiga kirish", url=STUDENT_SITE_URL)],
-    ])
-
-
 def site_and_reregister_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🌐 Student tizimiga kirish", url=STUDENT_SITE_URL)],
