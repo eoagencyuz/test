@@ -110,9 +110,11 @@ REQUIRED_CHANNEL = os.environ.get("REQUIRED_CHANNEL", "@kiu_uz").strip()
 if REQUIRED_CHANNEL.lower() in ("off", "no", "0", "-"):
     REQUIRED_CHANNEL = ""
 # Kanal havolasi (tugma uchun). Bo'sh bo'lsa @username dan yasaladi.
-# Rassilka qila oladigan adminlar: Telegram ID'lar vergul bilan (o'z ID'ingizni botga /id yozib bilasiz)
+# Rassilka qila oladigan adminlar: Telegram ID'lar vergul bilan (o'z ID'ingizni botga /id yozib bilasiz).
+# Standart admin: 1144976151. ADMIN_IDS berilsa, shu ro'yxat ishlatiladi.
 ADMIN_IDS = {
-    int(x) for x in re.split(r"[,\s]+", os.environ.get("ADMIN_IDS", "")) if x.strip().lstrip("-").isdigit()
+    int(x) for x in re.split(r"[,\s]+", os.environ.get("ADMIN_IDS", "1144976151"))
+    if x.strip().lstrip("-").isdigit()
 }
 
 REQUIRED_CHANNEL_URL = os.environ.get("REQUIRED_CHANNEL_URL", "").strip() or (

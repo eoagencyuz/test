@@ -14,7 +14,8 @@ _TMP = Path(tempfile.mkdtemp(prefix="bot-tests-"))
 os.environ["DATABASE_FILE"] = str(_TMP / "test.db")
 os.environ["EXCEL_FILE"] = str(_TMP / "missing.xlsx")
 os.environ["BOT_TOKEN"] = ""
-os.environ["REQUIRED_CHANNEL"] = "off"   # testlarda kanal tekshiruvi alohida yoqiladi
+os.environ["REQUIRED_CHANNEL"] = "off"
+os.environ["ADMIN_IDS"] = ""   # testlarda admin alohida beriladi   # testlarda kanal tekshiruvi alohida yoqiladi
 
 # Soxta (synthetic) talabalar: faqat test uchun, real ma'lumot emas
 HEADERS = ["№", "F.I.Sh.", "Telefon raqam", "Pasport seriya va raqami", "HEMIS ID", "Ta'lim yo'nalishi"]
