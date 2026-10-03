@@ -51,7 +51,14 @@ class Database:
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(users)")}
+        if "sheets_synced" not in columns:
+            # 0 - Google Sheets'ga hali yozilmagan, 1 - yozilgan
+            self._conn.execute("ALTER TABLE users ADD COLUMN sheets_synced INTEGER NOT NULL DEFAULT 0")
 
     def execute(self, sql: str, params: tuple = ()) -> list[tuple]:
         with self._lock:
@@ -70,15 +77,17 @@ class Database:
                   phone: str, passport: str, hemis_id: str) -> None:
         self.execute(
             """
-            INSERT INTO users (telegram_id, username, full_name, phone, passport, hemis_id, registered_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO users (telegram_id, username, full_name, phone, passport, hemis_id,
+                               registered_at, sheets_synced)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
             ON CONFLICT(telegram_id) DO UPDATE SET
                 username = excluded.username,
                 full_name = excluded.full_name,
                 phone = excluded.phone,
                 passport = excluded.passport,
                 hemis_id = excluded.hemis_id,
-                registered_at = excluded.registered_at
+                registered_at = excluded.registered_at,
+                sheets_synced = 0
             """,
             (telegram_id, username, full_name, phone, passport, hemis_id,
              datetime.now(timezone.utc).isoformat(timespec="seconds")),
@@ -91,6 +100,22 @@ class Database:
             (telegram_id,),
         )
         return RegisteredUser(*rows[0]) if rows else None
+
+    def get_unsynced_users(self, limit: int = 50) -> list[RegisteredUser]:
+        """Google Sheets'ga hali yozilmagan foydalanuvchilar."""
+        rows = self.execute(
+            "SELECT telegram_id, username, full_name, phone, passport, hemis_id, registered_at "
+            "FROM users WHERE sheets_synced = 0 ORDER BY registered_at LIMIT ?",
+            (limit,),
+        )
+        return [RegisteredUser(*row) for row in rows]
+
+    def mark_synced(self, user: RegisteredUser) -> None:
+        # Yuborish paytida foydalanuvchi qayta ro'yxatdan o'tgan bo'lsa, yangi yozuv belgilanmaydi
+        self.execute(
+            "UPDATE users SET sheets_synced = 1 WHERE telegram_id = ? AND registered_at = ?",
+            (user.telegram_id, user.registered_at),
+        )
 
 
 def _key(key: StorageKey) -> str:

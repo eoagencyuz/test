@@ -1,4 +1,5 @@
 """Botning to'liq ro'yxatdan o'tish jarayoni (Telegram API soxtalashtirilgan)."""
+import asyncio
 import itertools
 from datetime import datetime
 
@@ -279,3 +280,26 @@ async def test_web_api(excel_file):
         wrong = await (await http.get("/api/check?passport=TT1111111&phone=909999999")).json()
         assert wrong["found"] is False
         assert (await http.get("/")).status == 200
+
+
+async def test_registration_is_sent_to_sheets(client):
+    from tests.test_sheets_service import SECRET, FakeAppsScript
+    from services.sheets_service import SheetsSync
+
+    fake = FakeAppsScript()
+    await fake.server.start_server()
+    sync = SheetsSync(client.db, fake.url, SECRET)
+    client.dp["sheets"] = sync
+    try:
+        await fill_until_confirm(client)
+        out = await client.press("reg:confirm")
+        assert "300000000001" in out[1]
+        for _ in range(50):
+            if str(USER_ID) in fake.rows:
+                break
+            await asyncio.sleep(0.05)
+        assert fake.rows[str(USER_ID)]["hemis_id"] == "300000000001"
+    finally:
+        client.dp["sheets"] = None
+        await sync.stop()
+        await fake.server.close()

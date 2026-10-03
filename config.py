@@ -29,3 +29,9 @@ DATABASE_FILE = _path(os.environ.get("DATABASE_FILE", "bot_data.db"))
 
 STUDENT_SITE_URL = "https://student.kiu.uz"
 STUDENT_SITE_NAME = "student.kiu.uz"
+
+# Ro'yxatdan o'tganlarni Google Sheets'ga yozish (Google Apps Script Web App).
+# SHEETS_WEBHOOK_URL bo'sh bo'lsa bu funksiya o'chiq.
+SHEETS_WEBHOOK_URL = os.environ.get("SHEETS_WEBHOOK_URL", "").strip()
+SHEETS_SECRET = os.environ.get("SHEETS_SECRET", "").strip()
+SHEETS_SYNC_INTERVAL = int(os.environ.get("SHEETS_SYNC_INTERVAL", 60))

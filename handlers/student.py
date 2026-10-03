@@ -11,6 +11,7 @@ from handlers import keyboards as kb
 from handlers import texts
 from handlers.states import Registration
 from services.excel_service import ExcelDataError, StudentRegistry
+from services.sheets_service import SheetsSync
 from services.validation_service import display_name, mask_value
 
 logger = logging.getLogger(__name__)
@@ -19,7 +20,8 @@ router = Router(name="student")
 
 @router.callback_query(F.data == kb.CB_CONFIRM, Registration.confirming_data)
 async def confirm_and_search(callback: CallbackQuery, state: FSMContext,
-                             db: Database, registry: StudentRegistry) -> None:
+                             db: Database, registry: StudentRegistry,
+                             sheets: SheetsSync | None = None) -> None:
     user = callback.from_user
     message = callback.message
     data = await state.get_data()
@@ -60,6 +62,8 @@ async def confirm_and_search(callback: CallbackQuery, state: FSMContext,
     )
     await state.clear()
     logger.info("Ro'yxatdan o'tdi (user_id=%s, hemis_id=%s)", user.id, mask_value(hemis_id))
+    if sheets:
+        sheets.trigger()
 
     await message.answer(texts.verified(full_name, data["phone"], data["passport"], hemis_id))
     await message.answer(texts.login_instructions(hemis_id, data["passport"]), reply_markup=kb.site_kb())
