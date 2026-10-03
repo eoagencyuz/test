@@ -6,8 +6,8 @@ from datetime import datetime
 import pytest
 from aiogram import Bot
 from aiogram.client.session.base import BaseSession
-from aiogram.methods import AnswerCallbackQuery, EditMessageReplyMarkup, SendMessage
-from aiogram.types import Chat, Message, Update
+from aiogram.methods import AnswerCallbackQuery, EditMessageReplyMarkup, GetChatMember, SendMessage
+from aiogram.types import Chat, ChatMemberLeft, ChatMemberMember, Message, Update, User
 
 import bot as bot_module
 from bot import Database, SQLiteStorage
@@ -23,11 +23,15 @@ class FakeSession(BaseSession):
     def __init__(self):
         super().__init__()
         self.sent: list = []
+        self.channel_member = True   # majburiy kanalga a'zomi (GetChatMember javobi)
 
     async def make_request(self, bot, method, timeout=None):
         self.sent.append(method)
         if isinstance(method, (AnswerCallbackQuery, EditMessageReplyMarkup)):
             return True
+        if isinstance(method, GetChatMember):
+            user = User(id=method.user_id, is_bot=False, first_name="T")
+            return ChatMemberMember(user=user) if self.channel_member else ChatMemberLeft(user=user)
         return Message(message_id=next(_ids), date=datetime.now(),
                        chat=Chat(id=USER_ID, type="private"), text=getattr(method, "text", None))
 
@@ -357,3 +361,54 @@ async def test_wrong_name_but_correct_passport(client):
     # Salomlashuvda bazadagi to'g'ri ism ishlatiladi
     assert out[1].startswith("Hurmatli TESTOV ALPHA BETA O‘G‘LI!")
     assert "🪪 TALABA ID: 300000000001" in out[1]
+
+
+@pytest.fixture
+def required_channel(monkeypatch):
+    monkeypatch.setattr(bot_module, "REQUIRED_CHANNEL", "@test_kanal")
+    monkeypatch.setattr(bot_module, "REQUIRED_CHANNEL_URL", "https://t.me/test_kanal")
+    bot_module._subscribed_until.clear()
+    yield
+    bot_module._subscribed_until.clear()
+
+
+async def test_channel_subscription_required(client, required_channel):
+    client.session.channel_member = False
+    out = await client.text("/start")
+    assert out == [bot_module.SUBSCRIBE_REQUIRED]
+    buttons = client.last_markup().inline_keyboard
+    assert buttons[0][0].url == "https://t.me/test_kanal"
+    assert buttons[1][0].callback_data == "sub:check"
+    # Ro'yxatdan o'tish tugmasi ham ishlamaydi
+    out = await client.press("reg:start")
+    assert out == [bot_module.SUBSCRIBE_REQUIRED]
+    assert await client.state() is None
+    # A'zo bo'lmay "Tekshirish" bosilsa -- ogohlantirish (yangi xabar yo'q)
+    assert await client.press("sub:check") == []
+
+    # A'zo bo'lgach -- bosh menyu chiqadi va bot odatdagidek ishlaydi
+    client.session.channel_member = True
+    out = await client.press("sub:check")
+    assert out[0].startswith("Assalomu alaykum!")
+    await fill_until_confirm(client)
+    out = await client.press("reg:confirm")
+    assert "🪪 TALABA ID: 300000000001" in out[1]
+
+
+async def test_channel_check_resumes_registration_step(client, required_channel):
+    await client.press("reg:start")           # a'zo -- ism bosqichi
+    client.session.channel_member = False
+    bot_module._subscribed_until.clear()      # kanaldan chiqib ketdi
+    out = await client.text("TESTOV ALPHA")
+    assert out == [bot_module.SUBSCRIBE_REQUIRED]
+    assert await client.state() == "Registration:waiting_name"
+    client.session.channel_member = True
+    out = await client.press("sub:check")
+    assert out[0].startswith("1️⃣ Ism va familiyangizni")
+
+
+async def test_channel_check_disabled_by_default(client):
+    assert bot_module.REQUIRED_CHANNEL == ""
+    client.session.channel_member = False
+    out = await client.text("/start")
+    assert out[0].startswith("Assalomu alaykum!")

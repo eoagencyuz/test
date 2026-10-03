@@ -139,6 +139,7 @@ async def test_both_phones_are_sent(db, apps_script):
     db.save_user(6, None, "BIR TELEFON", "998935550001", "TT1111112", "300000000006", "998935550001")
     sync = SheetsSync(db, apps_script.url, SECRET)
     assert await sync.sync_pending() == 2
-    assert apps_script.rows["5"]["phone"] == "998935550000 / 998901112233"
-    assert apps_script.rows["6"]["phone"] == "998935550001 / 998935550001"   # bir xil bo'lsa ham ikkalasi
+    # Telegram tugmasi orqali va qo'lda kiritilgan raqamlar alohida maydonlarda
+    assert (apps_script.rows["5"]["phone"], apps_script.rows["5"]["phone2"]) == ("998935550000", "998901112233")
+    assert (apps_script.rows["6"]["phone"], apps_script.rows["6"]["phone2"]) == ("998935550001", "998935550001")
     await sync.stop()

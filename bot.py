@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
-from aiogram import Bot, Dispatcher, F, Router
+from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
+from aiogram.enums import ChatMemberStatus
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -101,6 +102,14 @@ STUDENT_SITE_NAME = "student.kiu.uz"
 SHEETS_WEBHOOK_URL = os.environ.get("SHEETS_WEBHOOK_URL", "").strip()
 SHEETS_SECRET = os.environ.get("SHEETS_SECRET", "").strip()
 SHEETS_SYNC_INTERVAL = int(os.environ.get("SHEETS_SYNC_INTERVAL", 60))
+
+# Majburiy kanal: bo'sh bo'lsa tekshirilmaydi. Masalan: @kiu_uz yoki -1001234567890.
+# Bot shu kanalda administrator bo'lishi kerak (a'zolikni tekshirish uchun).
+REQUIRED_CHANNEL = os.environ.get("REQUIRED_CHANNEL", "").strip()
+# Kanal havolasi (tugma uchun). Bo'sh bo'lsa @username dan yasaladi.
+REQUIRED_CHANNEL_URL = os.environ.get("REQUIRED_CHANNEL_URL", "").strip() or (
+    f"https://t.me/{REQUIRED_CHANNEL[1:]}" if REQUIRED_CHANNEL.startswith("@") else ""
+)
 
 
 # ======================================================================
@@ -874,6 +883,11 @@ SEARCHING = "🔎 Ma’lumotlaringiz tekshirilmoqda..."
 STILL_SEARCHING = "⏳ Ma’lumotlaringiz tekshirilmoqda, iltimos kuting."
 CHOOSE_BUTTON = "ℹ️ Iltimos, quyidagi tugmalardan birini tanlang."
 STALE_BUTTON = "Bu tugma eskirgan. Iltimos, /start buyrug‘ini yuboring."
+SUBSCRIBE_REQUIRED = (
+    "📢 Botdan foydalanish uchun avval rasmiy kanalimizga a’zo bo‘ling.\n\n"
+    "A’zo bo‘lgach, «✅ Tekshirish» tugmasini bosing."
+)
+NOT_SUBSCRIBED_YET = "❌ Siz hali kanalga a’zo bo‘lmagansiz. Avval kanalga a’zo bo‘ling."
 SERVICE_UNAVAILABLE = (
     "⚠️ Hozircha ma’lumotlarni tekshirib bo‘lmadi. "
     "Birozdan so‘ng «✅ Tasdiqlash» tugmasini qayta bosing."
@@ -935,6 +949,7 @@ CB_REREGISTER = "reg:restart"
 CB_CONFIRM = "reg:confirm"
 CB_EDIT = "reg:edit"
 CB_CANCEL = "reg:cancel"
+CB_CHECK_SUB = "sub:check"
 
 PHONE_BUTTON_TEXT = "📱 Telefon raqamni yuborish"
 
@@ -968,6 +983,14 @@ def site_and_reregister_kb() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🌐 Student tizimiga kirish", url=STUDENT_SITE_URL)],
         [InlineKeyboardButton(text="🔄 Qayta ro‘yxatdan o‘tish", callback_data=CB_REREGISTER)],
     ])
+
+
+def subscribe_kb() -> InlineKeyboardMarkup:
+    rows = []
+    if REQUIRED_CHANNEL_URL:
+        rows.append([InlineKeyboardButton(text="📢 Kanalga a’zo bo‘lish", url=REQUIRED_CHANNEL_URL)])
+    rows.append([InlineKeyboardButton(text="✅ Tekshirish", callback_data=CB_CHECK_SUB)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def reregister_kb() -> InlineKeyboardMarkup:
@@ -1243,7 +1266,71 @@ async def stale_callback(callback: CallbackQuery) -> None:
 
 db = Database(DATABASE_FILE)
 sheets = create_sheets_sync(db, SHEETS_WEBHOOK_URL, SHEETS_SECRET, SHEETS_SYNC_INTERVAL)
+# ---------------- Majburiy kanalga a'zolik ----------------
+
+SUBSCRIBED_STATUSES = {ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR}
+SUBSCRIPTION_CACHE_SECONDS = 600
+_subscribed_until: dict[int, float] = {}
+
+
+async def is_subscribed(bot: Bot, user_id: int) -> bool:
+    """Foydalanuvchi majburiy kanalga a'zomi. Tekshirib bo'lmasa (bot admin emas va h.k.) -- bot to'xtamaydi."""
+    if not REQUIRED_CHANNEL:
+        return True
+    loop = asyncio.get_running_loop()
+    if _subscribed_until.get(user_id, 0) > loop.time():
+        return True
+    try:
+        member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL, user_id=user_id)
+    except Exception as e:
+        logger.error("Kanal a'zoligini tekshirib bo'lmadi (bot kanalda admin ekanini tekshiring): %s",
+                     type(e).__name__)
+        return True
+    ok = member.status in SUBSCRIBED_STATUSES or (
+        member.status == ChatMemberStatus.RESTRICTED and getattr(member, "is_member", False)
+    )
+    if ok:
+        _subscribed_until[user_id] = loop.time() + SUBSCRIPTION_CACHE_SECONDS
+    return ok
+
+
+class SubscriptionMiddleware(BaseMiddleware):
+    """Kanalga a'zo bo'lmagan foydalanuvchiga bot ishlamaydi -- avval a'zo bo'lish so'raladi."""
+
+    async def __call__(self, handler, event, data):
+        user = data.get("event_from_user")
+        chat = data.get("event_chat")
+        if not REQUIRED_CHANNEL or user is None or (chat is not None and chat.type != "private"):
+            return await handler(event, data)
+
+        bot: Bot = data["bot"]
+        if isinstance(event, CallbackQuery) and event.data == CB_CHECK_SUB:
+            if await is_subscribed(bot, user.id):
+                await event.answer("✅ Rahmat!")
+                await event.message.edit_reply_markup(reply_markup=None)
+                state: FSMContext = data["state"]
+                if await state.get_state() in {s.state for s in IN_PROGRESS_STATES}:
+                    await send_step_prompt(event.message, state)
+                else:
+                    await show_home(event.message, user.id, data["db"])
+            else:
+                await event.answer(NOT_SUBSCRIBED_YET, show_alert=True)
+            return None
+
+        if await is_subscribed(bot, user.id):
+            return await handler(event, data)
+
+        if isinstance(event, CallbackQuery):
+            await event.answer(NOT_SUBSCRIBED_YET, show_alert=True)
+            await event.message.answer(SUBSCRIBE_REQUIRED, reply_markup=subscribe_kb())
+        else:
+            await event.answer(SUBSCRIBE_REQUIRED, reply_markup=subscribe_kb())
+        return None
+
+
 dp = Dispatcher(storage=SQLiteStorage(db), db=db, registry=registry, sheets=sheets)
+dp.message.outer_middleware(SubscriptionMiddleware())
+dp.callback_query.outer_middleware(SubscriptionMiddleware())
 dp.include_routers(start_router, registration_router, student_router, fallback_router)
 
 
