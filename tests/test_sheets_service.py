@@ -132,3 +132,13 @@ def test_existing_database_is_migrated(tmp_path):
     d = Database(path)
     assert [u.telegram_id for u in d.get_unsynced_users()] == [7]  # eski yozuvlar ham yuboriladi
     d.close()
+
+
+async def test_both_phones_are_sent(db, apps_script):
+    db.save_user(5, None, "IKKI TELEFON", "998935550000", "TT1111111", "300000000005", "998901112233")
+    db.save_user(6, None, "BIR TELEFON", "998935550001", "TT1111112", "300000000006", "998935550001")
+    sync = SheetsSync(db, apps_script.url, SECRET)
+    assert await sync.sync_pending() == 2
+    assert apps_script.rows["5"]["phone"] == "998935550000 / 998901112233"
+    assert apps_script.rows["6"]["phone"] == "998935550001"   # bir xil bo'lsa takrorlanmaydi
+    await sync.stop()

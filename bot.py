@@ -228,6 +228,7 @@ class RegisteredUser:
     passport: str
     hemis_id: str
     registered_at: str
+    phone2: str = ""   # qo'lda kiritilgan qo'shimcha telefon
 
 
 class Database:
@@ -245,6 +246,8 @@ class Database:
         if "sheets_synced" not in columns:
             # 0 - Google Sheets'ga hali yozilmagan, 1 - yozilgan
             self._conn.execute("ALTER TABLE users ADD COLUMN sheets_synced INTEGER NOT NULL DEFAULT 0")
+        if "phone2" not in columns:
+            self._conn.execute("ALTER TABLE users ADD COLUMN phone2 TEXT NOT NULL DEFAULT ''")
 
     def execute(self, sql: str, params: tuple = ()) -> list[tuple]:
         with self._lock:
@@ -260,12 +263,12 @@ class Database:
     # ---------------- Ro'yxatdan o'tganlar ----------------
 
     def save_user(self, telegram_id: int, username: str | None, full_name: str,
-                  phone: str, passport: str, hemis_id: str) -> None:
+                  phone: str, passport: str, hemis_id: str, phone2: str = "") -> None:
         self.execute(
             """
             INSERT INTO users (telegram_id, username, full_name, phone, passport, hemis_id,
-                               registered_at, sheets_synced)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                               registered_at, sheets_synced, phone2)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
             ON CONFLICT(telegram_id) DO UPDATE SET
                 username = excluded.username,
                 full_name = excluded.full_name,
@@ -273,15 +276,16 @@ class Database:
                 passport = excluded.passport,
                 hemis_id = excluded.hemis_id,
                 registered_at = excluded.registered_at,
-                sheets_synced = 0
+                sheets_synced = 0,
+                phone2 = excluded.phone2
             """,
             (telegram_id, username, full_name, phone, passport, hemis_id,
-             datetime.now(timezone.utc).isoformat(timespec="seconds")),
+             datetime.now(timezone.utc).isoformat(timespec="seconds"), phone2),
         )
 
     def get_user(self, telegram_id: int) -> RegisteredUser | None:
         rows = self.execute(
-            "SELECT telegram_id, username, full_name, phone, passport, hemis_id, registered_at "
+            "SELECT telegram_id, username, full_name, phone, passport, hemis_id, registered_at, phone2 "
             "FROM users WHERE telegram_id = ?",
             (telegram_id,),
         )
@@ -290,7 +294,7 @@ class Database:
     def get_unsynced_users(self, limit: int = 50) -> list[RegisteredUser]:
         """Google Sheets'ga hali yozilmagan foydalanuvchilar."""
         rows = self.execute(
-            "SELECT telegram_id, username, full_name, phone, passport, hemis_id, registered_at "
+            "SELECT telegram_id, username, full_name, phone, passport, hemis_id, registered_at, phone2 "
             "FROM users WHERE sheets_synced = 0 ORDER BY registered_at LIMIT ?",
             (limit,),
         )
@@ -676,7 +680,9 @@ def build_record(user: RegisteredUser) -> dict:
         "telegram_id": str(user.telegram_id),
         "username": user.username or "",
         "full_name": user.full_name,
-        "phone": user.phone,
+        # Apps Script o'zgarmasligi uchun ikkala raqam bitta "Telefon" ustunida
+        "phone": user.phone if not user.phone2 or user.phone2 == user.phone
+        else f"{user.phone} / {user.phone2}",
         "passport": user.passport,
         "hemis_id": user.hemis_id,
         "registered_at": local_time(user.registered_at),
@@ -778,7 +784,8 @@ def create_sheets_sync(db: Database, url: str, secret: str, interval: int) -> Sh
 class Registration(StatesGroup):
     """Ro'yxatdan o'tish bosqichlari. COMPLETED holati users jadvalida saqlanadi."""
     waiting_name = State()
-    waiting_phone = State()
+    waiting_phone = State()        # Telegram kontaktini yuborish (tugma)
+    waiting_phone2 = State()       # telefon raqamini qo'lda kiritish
     waiting_passport = State()
     confirming_data = State()
     searching_student = State()
@@ -787,6 +794,7 @@ class Registration(StatesGroup):
 IN_PROGRESS_STATES = (
     Registration.waiting_name,
     Registration.waiting_phone,
+    Registration.waiting_phone2,
     Registration.waiting_passport,
     Registration.confirming_data,
 )
@@ -797,18 +805,17 @@ IN_PROGRESS_STATES = (
 # ======================================================================
 
 WELCOME = (
-    "Assalomu alaykum! 👋\n\n"
-    "Qarshi Xalqaro Universiteti talabalari uchun HEMIS ma’lumotlarini aniqlash xizmatiga xush kelibsiz.\n\n"
-    "Davom etish uchun ro‘yxatdan o‘ting.\n\n"
+    "Assalomu alaykum!\n"
+    "Qarshi xalqaro universiteti talabalari uchun HEMIS ma’lumotlarini aniqlash xizmatiga xush kelibsiz.\n"
+    "Davom etish uchun ro‘yxatdan o‘ting.\n"
     "Ma’lumotlaringizni ketma-ket kiritishingiz kerak bo‘ladi."
 )
 
 ASK_NAME = (
     "1️⃣ Ism va familiyangizni to‘liq kiriting.\n\n"
-    "Faqat LOTIN alifbosidan foydalaning.\n\n"
+    "Faqat LOTIN alifbosidan foydalaning.\n"
     "Masalan:\n"
-    "ALIYEV VALI\n\n"
-    "Ism va familiya to‘liq yozilishi shart."
+    "ALIYEV VALI"
 )
 INVALID_NAME = (
     "❌ Ism va familiya noto‘g‘ri formatda.\n\n"
@@ -818,44 +825,35 @@ INVALID_NAME = (
     "Kamida familiya va ism yozilishi kerak."
 )
 
-ASK_PHONE = (
+ASK_PHONE_SHARE = "2️⃣ «Telefon raqamni yuborish» tugmasini bosing."
+PRESS_PHONE_BUTTON = "❌ Iltimos, pastdagi «📱 Telefon raqamni yuborish» tugmasini bosing."
+
+ASK_PHONE_MANUAL = (
     "2️⃣ Telefon raqamingizni yuboring.\n\n"
-    "📱 Eng qulay usul — «Telefon raqamni yuborish» tugmasini bosing.\n\n"
-    "Yoki telefon raqamingizni qo‘lda kiriting.\n\n"
-    "Ruxsat etilgan formatlar:\n\n"
+    "Ruxsat etilgan formatlar:\n"
     "XXXXXXXXX\n"
     "yoki\n"
-    "998XXXXXXXXX\n\n"
-    "Masalan, tasodifiy namuna:\n"
-    "901234567\n"
-    "998901234567\n\n"
-    "⚠️ Namuna raqamlar faqat formatni ko‘rsatish uchun berilgan."
+    "998XXXXXXXXX"
 )
 INVALID_PHONE = (
     "❌ Telefon raqami noto‘g‘ri formatda.\n\n"
     "Telefon raqamingizni quyidagi formatlardan birida kiriting:\n\n"
     "XXXXXXXXX\n\n"
     "yoki\n\n"
-    "998XXXXXXXXX\n\n"
-    "Yoki «📱 Telefon raqamni yuborish» tugmasidan foydalaning."
+    "998XXXXXXXXX"
 )
 FOREIGN_CONTACT = (
     "❌ Iltimos, faqat o‘zingizning telefon raqamingizni "
     "«📱 Telefon raqamni yuborish» tugmasi orqali yuboring."
 )
-UNSUPPORTED_CONTACT = (
-    "❌ Faqat O‘zbekiston (998) telefon raqamlari qabul qilinadi.\n\n"
-    "Telefon raqamingizni XXXXXXXXX yoki 998XXXXXXXXX formatida qo‘lda kiriting."
-)
 
 ASK_PASSPORT = (
     "3️⃣ Pasport seriya va raqamingizni kiriting.\n\n"
-    "Format:\n\n"
-    "AA1234567\n\n"
+    "Format:\n"
+    "AA1234567\n"
     "Ya’ni:\n"
     "• 2 ta katta LOTIN harfi\n"
-    "• 7 ta raqam\n\n"
-    "⚠️ Misol faqat formatni tushuntirish uchun."
+    "• 7 ta raqam"
 )
 INVALID_PASSPORT = (
     "❌ Pasport seriya va raqami noto‘g‘ri formatda.\n\n"
@@ -888,11 +886,12 @@ NOT_FOUND = (
 )
 
 
-def confirm_data(full_name: str, phone: str, passport: str) -> str:
+def confirm_data(full_name: str, phone: str, phone2: str, passport: str) -> str:
     return (
-        "🔎 Kiritilgan ma’lumotlaringiz:\n\n"
-        f"👤 F.I.Sh.: {full_name}\n\n"
-        f"📱 Telefon: {phone}\n\n"
+        "🔎 Kiritilgan ma’lumotlaringiz:\n"
+        f"👤 F.I.Sh.: {full_name}\n"
+        f"📱 Telefon: {phone}\n"
+        f"📞 Qo‘shimcha telefon: {phone2}\n"
         f"🪪 Pasport: {passport}\n\n"
         "Ma’lumotlaringizni tasdiqlaysizmi?"
     )
@@ -996,7 +995,9 @@ async def send_step_prompt(message: Message, state: FSMContext) -> None:
     if current == Registration.waiting_name.state:
         await message.answer(ASK_NAME, reply_markup=REMOVE)
     elif current == Registration.waiting_phone.state:
-        await message.answer(ASK_PHONE, reply_markup=phone_kb())
+        await message.answer(ASK_PHONE_SHARE, reply_markup=phone_kb())
+    elif current == Registration.waiting_phone2.state:
+        await message.answer(ASK_PHONE_MANUAL, reply_markup=REMOVE)
     elif current == Registration.waiting_passport.state:
         await message.answer(ASK_PASSPORT, reply_markup=REMOVE)
     elif current == Registration.confirming_data.state:
@@ -1006,7 +1007,7 @@ async def send_step_prompt(message: Message, state: FSMContext) -> None:
 async def send_confirmation(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     await message.answer(
-        confirm_data(display_name(data["full_name"]), data["phone"], data["passport"]),
+        confirm_data(display_name(data["full_name"]), data["phone"], data.get("phone2", ""), data["passport"]),
         reply_markup=confirm_kb(),
     )
 
@@ -1021,10 +1022,10 @@ async def process_name(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(full_name=full_name)
     await state.set_state(Registration.waiting_phone)
-    await message.answer(ASK_PHONE, reply_markup=phone_kb())
+    await message.answer(ASK_PHONE_SHARE, reply_markup=phone_kb())
 
 
-# ---------------- 2. Telefon ----------------
+# ---------------- 2. Telefon: (a) tugma orqali, (b) qo'lda ----------------
 
 @registration_router.message(Registration.waiting_phone, F.contact)
 async def process_contact(message: Message, state: FSMContext) -> None:
@@ -1033,24 +1034,29 @@ async def process_contact(message: Message, state: FSMContext) -> None:
     if not message.from_user or contact.user_id != message.from_user.id:
         await message.answer(FOREIGN_CONTACT, reply_markup=phone_kb())
         return
-    phone = normalize_phone(contact.phone_number)
+    # O'zbekiston raqami 998XXXXXXXXX ko'rinishida, boshqa davlat raqami + bilan saqlanadi
+    digits = re.sub(r"[^0-9]", "", contact.phone_number or "")
+    phone = normalize_phone(digits) or (f"+{digits}" if digits else "")
     if not phone:
-        await message.answer(UNSUPPORTED_CONTACT, reply_markup=phone_kb())
+        await message.answer(PRESS_PHONE_BUTTON, reply_markup=phone_kb())
         return
-    await _accept_phone(message, state, phone)
+    await state.update_data(phone=phone)
+    await state.set_state(Registration.waiting_phone2)
+    await message.answer(ASK_PHONE_MANUAL, reply_markup=REMOVE)
 
 
 @registration_router.message(Registration.waiting_phone, F.text)
+async def phone_button_expected(message: Message) -> None:
+    await message.answer(PRESS_PHONE_BUTTON, reply_markup=phone_kb())
+
+
+@registration_router.message(Registration.waiting_phone2, F.text)
 async def process_phone_text(message: Message, state: FSMContext) -> None:
-    phone = validate_phone(message.text)
-    if not phone:
-        await message.answer(INVALID_PHONE, reply_markup=phone_kb())
+    phone2 = validate_phone(message.text)
+    if not phone2:
+        await message.answer(INVALID_PHONE)
         return
-    await _accept_phone(message, state, phone)
-
-
-async def _accept_phone(message: Message, state: FSMContext, phone: str) -> None:
-    await state.update_data(phone=phone)
+    await state.update_data(phone2=phone2)
     await state.set_state(Registration.waiting_passport)
     await message.answer(ASK_PASSPORT, reply_markup=REMOVE)
 
@@ -1140,7 +1146,7 @@ async def confirm_and_search(callback: CallbackQuery, state: FSMContext,
     full_name = display_name(student.full_name or data["full_name"])
     await asyncio.to_thread(
         db.save_user, user.id, user.username, data["full_name"],
-        data["phone"], data["passport"], hemis_id,
+        data["phone"], data["passport"], hemis_id, data.get("phone2", ""),
     )
     await state.clear()
     logger.info("Ro'yxatdan o'tdi (user_id=%s, hemis_id=%s)", user.id, mask_value(hemis_id))

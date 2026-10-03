@@ -96,9 +96,17 @@ async def client(tmp_path, excel_file):
     c.db.close()
 
 
+SHARED = "+998935550000"   # Telegram orqali yuboriladigan (share) raqam -- test uchun
+
+
+async def share(c, phone=SHARED, user_id=USER_ID):
+    return await c.message(contact={"phone_number": phone, "first_name": "T", "user_id": user_id})
+
+
 async def fill_until_confirm(c, name="TESTOV ALPHA", phone="901112233", passport="TT1111111"):
     await c.press("reg:start")
     await c.text(name)
+    await share(c)
     await c.text(phone)
     return await c.text(passport)
 
@@ -106,7 +114,7 @@ async def fill_until_confirm(c, name="TESTOV ALPHA", phone="901112233", passport
 # TEST 1
 async def test_start_shows_welcome_with_register_button(client):
     out = await client.text("/start")
-    assert out[0].startswith("Assalomu alaykum! 👋")
+    assert out[0].startswith("Assalomu alaykum!\nQarshi xalqaro universiteti")
     button = client.last_markup().inline_keyboard[0][0]
     assert button.text == "📝 Ro‘yxatdan o‘tish" and button.callback_data == "reg:start"
 
@@ -122,12 +130,20 @@ async def test_full_registration_flow(client):
     assert await client.state() == "Registration:waiting_name"
 
     out = await client.text("testov   alpha")                                         # TEST 2
-    assert out[0].startswith("2️⃣ Telefon raqamingizni")
+    assert out == ["2️⃣ «Telefon raqamni yuborish» tugmasini bosing."]
     assert client.last_markup().keyboard[0][0].request_contact is True
+
+    # Tugma bosqichida raqamni yozib yuborish mumkin emas
+    assert (await client.text("901112233"))[0].startswith("❌ Iltimos, pastdagi «📱 Telefon")
+    assert await client.state() == "Registration:waiting_phone"
+
+    out = await share(client)
+    assert out[0].startswith("2️⃣ Telefon raqamingizni yuboring.")
+    assert await client.state() == "Registration:waiting_phone2"
 
     assert (await client.text("+998901112233"))[0].startswith("❌ Telefon raqami")    # TEST 7
     assert (await client.text("12345"))[0].startswith("❌ Telefon raqami")            # TEST 8
-    assert await client.state() == "Registration:waiting_phone"
+    assert await client.state() == "Registration:waiting_phone2"
 
     out = await client.text("901112233")                                              # TEST 5
     assert out[0].startswith("3️⃣ Pasport seriya")
@@ -135,9 +151,14 @@ async def test_full_registration_flow(client):
     assert (await client.text("tt1111111"))[0].startswith("❌ Pasport")               # TEST 10
     assert (await client.text("TT 1111111"))[0].startswith("❌ Pasport")
     out = await client.text("TT1111111")                                              # TEST 9
-    assert "👤 F.I.Sh.: TESTOV ALPHA" in out[0]
-    assert "📱 Telefon: 998901112233" in out[0]
-    assert "🪪 Pasport: TT1111111" in out[0]
+    assert out[0] == (
+        "🔎 Kiritilgan ma’lumotlaringiz:\n"
+        "👤 F.I.Sh.: TESTOV ALPHA\n"
+        "📱 Telefon: 998935550000\n"
+        "📞 Qo‘shimcha telefon: 998901112233\n"
+        "🪪 Pasport: TT1111111\n\n"
+        "Ma’lumotlaringizni tasdiqlaysizmi?"
+    )
 
     out = await client.press("reg:confirm")                                           # TEST 11
     assert out[0] == "🔎 Ma’lumotlaringiz tekshirilmoqda..."
@@ -154,13 +175,14 @@ async def test_full_registration_flow(client):
     assert await client.state() is None
 
     user = client.db.get_user(USER_ID)
-    assert (user.hemis_id, user.phone, user.passport, user.username) == \
-        ("300000000001", "998901112233", "TT1111111", "tester")
+    assert (user.hemis_id, user.phone, user.phone2, user.passport, user.username) == \
+        ("300000000001", "998935550000", "998901112233", "TT1111111", "tester")
 
 
 async def test_phone_accepted_with_998_prefix(client):                                # TEST 6
     await client.press("reg:start")
     await client.text("TESTOV ALPHA")
+    await share(client)
     out = await client.text("998901112233")
     assert out[0].startswith("3️⃣ Pasport")
 
@@ -168,12 +190,18 @@ async def test_phone_accepted_with_998_prefix(client):                          
 async def test_contact_button(client):
     await client.press("reg:start")
     await client.text("TESTOV ALPHA")
-    own = {"phone_number": "+998901112233", "first_name": "T", "user_id": USER_ID}
-    foreign = {**own, "user_id": USER_ID + 1}
-    assert (await client.message(contact=foreign))[0].startswith("❌ Iltimos, faqat o‘zingizning")
-    out = await client.message(contact=own)
-    assert out[0].startswith("3️⃣ Pasport")
-    assert (await client.state()) == "Registration:waiting_passport"
+    out = await share(client, user_id=USER_ID + 1)          # boshqa odamning kontakti
+    assert out[0].startswith("❌ Iltimos, faqat o‘zingizning")
+    assert await client.state() == "Registration:waiting_phone"
+    out = await share(client, phone="+7 999 123 45 67")    # chet el raqami ham qabul qilinadi
+    assert out[0].startswith("2️⃣ Telefon raqamingizni yuboring.")
+    assert (await client.state()) == "Registration:waiting_phone2"
+    # Qo'lda kiritish bosqichida kontakt emas, matn kutiladi
+    out = await share(client)
+    assert out == ["❌ Iltimos, ushbu bosqich uchun kerakli ma’lumotni matn ko‘rinishida yuboring."]
+    await client.text("901112233")
+    out = await client.text("TT1111111")
+    assert "📱 Telefon: +79991234567" in out[0]
 
 
 async def test_not_found_gives_no_hemis_id(client):                                   # TEST 12
@@ -196,9 +224,13 @@ async def test_start_during_registration_and_after(client):                     
     await client.text("TESTOV ALPHA")
     out = await client.text("/start")
     assert out[0].startswith("ℹ️ Ro‘yxatdan o‘tish jarayoni davom etmoqda")
-    assert out[1].startswith("2️⃣ Telefon")
+    assert out[1].startswith("2️⃣ «Telefon raqamni yuborish»")
     assert await client.state() == "Registration:waiting_phone"
+    assert client.last_markup().keyboard[0][0].request_contact is True
 
+    await share(client)
+    out = await client.text("/start")
+    assert out[1].startswith("2️⃣ Telefon raqamingizni yuboring.")
     await client.text("901112233")
     await client.text("TT1111111")
     await client.press("reg:confirm")
@@ -209,12 +241,14 @@ async def test_start_during_registration_and_after(client):                     
 async def test_state_survives_restart(client):                                        # TEST 15
     await client.press("reg:start")
     await client.text("TESTOV ALPHA")
+    await share(client)
     await client.text("901112233")
     client.db.close()
     client.restart()
     assert await client.state() == "Registration:waiting_passport"
     out = await client.text("TT1111111")
-    assert "📱 Telefon: 998901112233" in out[0]
+    assert "📱 Telefon: 998935550000" in out[0]
+    assert "📞 Qo‘shimcha telefon: 998901112233" in out[0]
 
 
 async def test_cancel_button(client):                                                 # TEST 16
@@ -241,6 +275,7 @@ async def test_reregister_button(client):                                       
     assert out[0].startswith("1️⃣ Ism va familiyangizni")
     assert await client.state() == "Registration:waiting_name"
     await client.text("BIRXIL EPSILON")
+    await share(client)
     await client.text("905550001")
     await client.text("TQ3333333")
     out = await client.press("reg:confirm")
