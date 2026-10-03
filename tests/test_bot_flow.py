@@ -352,6 +352,8 @@ async def test_registration_is_sent_to_sheets(client):
 async def test_wrong_name_but_correct_passport(client):
     await fill_until_confirm(client, name="NOTOGRI ISM", phone="909999999", passport="TT1111111")
     out = await client.press("reg:confirm")
+    # Bazaga talaba yozgan xato ism emas, ro'yxatdagi to'g'ri ism saqlanadi
+    assert client.db.get_user(USER_ID).full_name == "TESTOV ALPHA BETA O'G'LI"
     # Salomlashuvda bazadagi to'g'ri ism ishlatiladi
     assert out[1].startswith("🎓 Hurmatli TESTOV ALPHA BETA O‘G‘LI!")
     assert "🪪 TALABA ID: 300000000001" in out[1]
