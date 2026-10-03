@@ -54,6 +54,16 @@ bot keyinroq qayta yuboradi. Qayta ro'yxatdan o'tgan talabaning qatori yangilana
 Jadvalda pasport va telefonlar bo'ladi — uni faqat mas'ul xodimlarga ulashing.
 Apps Script kodini o'zgartirsangiz: **Deploy → Manage deployments → ✏️ → Version: New version**.
 
+## Majburiy kanal (ixtiyoriy)
+
+Botdan faqat kanal a'zolari foydalanishi uchun:
+1. Botni kanalga **administrator** qilib qo'shing (a'zolikni tekshira olishi uchun; boshqa huquq shart emas).
+2. Render → Environment: `REQUIRED_CHANNEL=@kanal_username`
+   (yopiq kanal bo'lsa `-100...` ID va `REQUIRED_CHANNEL_URL=https://t.me/+taklif_havolasi`).
+
+A'zo bo'lmagan foydalanuvchiga bot "Kanalga a'zo bo'ling" xabarini va «✅ Tekshirish» tugmasini ko'rsatadi.
+`REQUIRED_CHANNEL` bo'sh bo'lsa, tekshiruv o'chiq.
+
 ## Testlar
 
 ```bash
