@@ -30,6 +30,11 @@ function doPost(e) {
     return jsonOutput({ ok: false, error: "unauthorized" });
   }
 
+  // Rassilka uchun: bot ro'yxatdan o'tganlar ro'yxatini so'raydi
+  if (body.action === "list") {
+    return jsonOutput({ ok: true, rows: listRows() });
+  }
+
   const r = body.record || {};
   const values = [
     String(r.telegram_id || ""),
@@ -92,4 +97,31 @@ function testYozish() {
     record: { telegram_id: "TEST", full_name: "SINOV QATORI", hemis_id: "TEST" },
   }) } };
   Logger.log(doPost(e).getContent());
+}
+
+/**
+ * Ro'yxatdan o'tganlar (rassilka uchun): sarlavhadagi "Telegram ID", "F.I.Sh.", "HEMIS ID" ustunlari bo'yicha.
+ */
+function listRows() {
+  const spreadsheetId = PropertiesService.getScriptProperties().getProperty("SPREADSHEET_ID");
+  const ss = spreadsheetId ? SpreadsheetApp.openById(spreadsheetId) : SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss && ss.getSheetByName(SHEET_NAME);
+  if (!sheet || sheet.getLastRow() < 2) {
+    return [];
+  }
+  const values = sheet.getDataRange().getDisplayValues();
+  const header = values[0];
+  const idCol = header.indexOf("Telegram ID");
+  const nameCol = header.indexOf("F.I.Sh.");
+  const hemisCol = header.indexOf("HEMIS ID");
+  if (idCol < 0) {
+    return [];
+  }
+  return values.slice(1).map(function (row) {
+    return {
+      telegram_id: row[idCol],
+      full_name: nameCol >= 0 ? row[nameCol] : "",
+      hemis_id: hemisCol >= 0 ? row[hemisCol] : "",
+    };
+  });
 }

@@ -26,6 +26,9 @@ class FakeAppsScript:
         if self.fail:
             return web.Response(status=500)
         body = await request.json()
+        if body.get("secret") == SECRET and body.get("action") == "list":
+            self._last = {"ok": True, "rows": list(self.rows.values())}
+            raise web.HTTPFound("/echo")
         if body.get("secret") != SECRET:
             self._last = {"ok": False, "error": "unauthorized"}
         else:

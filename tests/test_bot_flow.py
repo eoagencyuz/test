@@ -6,8 +6,9 @@ from datetime import datetime
 import pytest
 from aiogram import Bot
 from aiogram.client.session.base import BaseSession
-from aiogram.methods import AnswerCallbackQuery, EditMessageReplyMarkup, GetChatMember, SendMessage
-from aiogram.types import Chat, ChatMemberLeft, ChatMemberMember, Message, Update, User
+from aiogram.exceptions import TelegramForbiddenError
+from aiogram.methods import AnswerCallbackQuery, CopyMessage, EditMessageReplyMarkup, GetChatMember, SendMessage
+from aiogram.types import Chat, ChatMemberLeft, ChatMemberMember, Message, MessageId, Update, User
 
 import bot as bot_module
 from bot import Database, SQLiteStorage
@@ -24,9 +25,14 @@ class FakeSession(BaseSession):
         super().__init__()
         self.sent: list = []
         self.channel_member = True   # majburiy kanalga a'zomi (GetChatMember javobi)
+        self.blocked: set[int] = set()   # botni bloklagan foydalanuvchilar
 
     async def make_request(self, bot, method, timeout=None):
         self.sent.append(method)
+        if getattr(method, "chat_id", None) in self.blocked:
+            raise TelegramForbiddenError(method=method, message="Forbidden: bot was blocked by the user")
+        if isinstance(method, CopyMessage):
+            return MessageId(message_id=next(_ids))
         if isinstance(method, (AnswerCallbackQuery, EditMessageReplyMarkup)):
             return True
         if isinstance(method, GetChatMember):
@@ -436,3 +442,107 @@ async def test_channel_check_can_be_turned_off(client):
     client.session.channel_member = False
     out = await client.text("/start")
     assert out[0].startswith("Assalomu alaykum!")
+
+
+# ---------------- Rassilka ----------------
+
+@pytest.fixture
+def admin(monkeypatch):
+    monkeypatch.setattr(bot_module, "ADMIN_IDS", {USER_ID})
+    monkeypatch.setattr(bot_module, "BROADCAST_DELAY", 0)
+
+
+def add_students(db):
+    db.save_user(2001, None, "ALIYEV VALI SOBIROVICH", "998900000001", "TA0000001", "300000000011")
+    db.save_user(2002, None, "KARIMOVA DILNOZA", "998900000002", "TA0000002", "300000000012")
+    db.save_user(2003, None, "TOPILMAGAN TALABA", "998900000003", "TA0000003", "TOPILMADI")
+
+
+async def finish_broadcasts():
+    await asyncio.gather(*list(bot_module._broadcast_tasks))
+
+
+def sent_to(client, chat_id):
+    return [m for m in client.session.sent if getattr(m, "chat_id", None) == chat_id
+            and isinstance(m, (SendMessage, CopyMessage))]
+
+
+async def test_broadcast_with_names(client, admin):
+    add_students(client.db)
+    client.session.blocked.add(2002)
+    out = await client.text("/rassilka")
+    assert out[0].startswith("📨 Rassilka xabarini yuboring.")
+    out = await client.text("Hurmatli {ism}! ({fio}) Ertaga dars bor.")
+    assert out[0].startswith("👀")
+    assert out[1] == "Hurmatli Vali! (ALIYEV VALI SOBIROVICH) Ertaga dars bor."
+    buttons = [b.text for row in client.last_markup().inline_keyboard for b in row]
+    assert buttons == ["📢 Hammaga (3)", "✅ HEMIS ID olganlarga (2)", "❌ Topilmaganlarga (1)", "🚫 Bekor qilish"]
+
+    out = await client.press("bc:hemis")
+    assert out == ["⏳ Rassilka boshlandi: 2 ta qabul qiluvchi."]
+    await finish_broadcasts()
+    assert [m.text for m in sent_to(client, 2001)] == ["Hurmatli Vali! (ALIYEV VALI SOBIROVICH) Ertaga dars bor."]
+    assert sent_to(client, 2003) == []                       # topilmaganlarga yuborilmadi
+    report = [m.text for m in sent_to(client, USER_ID) if m.text and m.text.startswith("✅ Rassilka tugadi")]
+    assert report and "Yuborildi: 1" in report[0] and "Yuborilmadi: 1" in report[0]
+    assert await client.state() is None
+
+
+async def test_broadcast_photo_to_not_found(client, admin):
+    add_students(client.db)
+    await client.text("/rassilka")
+    out = await client.message(photo=[{"file_id": "p", "file_unique_id": "p", "width": 1, "height": 1}],
+                               caption="{ism}, ma’lumotlaringizni tekshiring")
+    await client.press("bc:nf")
+    await finish_broadcasts()
+    copies = [m for m in sent_to(client, 2003) if isinstance(m, CopyMessage)]
+    assert len(copies) == 1 and copies[0].caption == "Talaba, ma’lumotlaringizni tekshiring"
+    assert sent_to(client, 2001) == []
+
+
+async def test_broadcast_cancel_and_commands(client, admin):
+    add_students(client.db)
+    await client.text("/rassilka")
+    out = await client.text("/bekor")
+    assert out == ["🚫 Rassilka bekor qilindi."]
+    await client.text("/rassilka")
+    await client.text("Salom {ism}")
+    out = await client.press("bc:cancel")
+    assert out == ["🚫 Rassilka bekor qilindi."]
+    await finish_broadcasts()
+    assert sent_to(client, 2001) == []
+
+
+async def test_broadcast_only_for_admins(client):
+    add_students(client.db)
+    out = await client.text("/rassilka")
+    assert not any("Rassilka" in t for t in out)          # oddiy foydalanuvchiga ishlamaydi
+    assert await client.press("bc:all") == []
+    await finish_broadcasts()
+    assert sent_to(client, 2001) == []
+    out = await client.text("/id")
+    assert out == [f"Sizning Telegram ID raqamingiz: {USER_ID}"]
+
+
+async def test_broadcast_includes_sheets_rows(client, admin):
+    from tests.test_sheets_service import SECRET, FakeAppsScript
+    from bot import SheetsSync
+
+    fake = FakeAppsScript()
+    fake.rows["3001"] = {"telegram_id": "3001", "full_name": "SHEETSDAGI TALABA", "hemis_id": "300000000031"}
+    fake.rows["TEST"] = {"telegram_id": "TEST", "full_name": "SINOV", "hemis_id": "TEST"}
+    await fake.server.start_server()
+    sync = SheetsSync(client.db, fake.url, SECRET)
+    client.dp["sheets"] = sync
+    try:
+        add_students(client.db)
+        await client.text("/rassilka")
+        out = await client.text("Salom {ism}")
+        assert out[2].startswith("Qabul qiluvchilar manbasi: bot bazasi va Google Sheets")
+        await client.press("bc:all")
+        await finish_broadcasts()
+        assert [m.text for m in sent_to(client, 3001)] == ["Salom Talaba"]
+    finally:
+        client.dp["sheets"] = None
+        await sync.stop()
+        await fake.server.close()
