@@ -537,14 +537,37 @@ class StudentRegistry:
         return find_student(self.students(), full_name, phone, passport)
 
 
-def _name_matches(entered: str, stored: str) -> bool:
-    """Kiritilgan so'zlar Excel'dagi F.I.Sh. boshidagi so'zlar bilan bir xil bo'lishi kerak.
+# Qoraqalpoq lotin harflari va boshqa urg'uli harflarni o'zbek lotiniga moslash
+_NAME_LETTER_MAP = str.maketrans({
+    "Ǵ": "G", "ǵ": "g", "Ó": "O", "ó": "o", "Á": "A", "á": "a", "Í": "I", "ı": "i",
+    "Ú": "U", "ú": "u", "Ń": "N", "ń": "n", "É": "E", "é": "e",
+})
 
-    Masalan, 'FAMILIYA ISM' Excel'dagi 'FAMILIYA ISM OTASINING_ISMI QIZI' ga mos keladi.
+
+def _name_key(name: str) -> tuple[str, set[int]]:
+    """Ismni solishtirish kaliti: faqat harflar (apostrof, chiziqcha, bo'sh joysiz) va so'z chegaralari.
+
+    'ABDU-RAHMON O'G'LI' -> ('ABDURAHMONOGLI', {4, 10, 14})
     """
-    entered_words = entered.split()
-    stored_words = stored.split()
-    return len(entered_words) <= len(stored_words) and stored_words[:len(entered_words)] == entered_words
+    key, bounds = "", set()
+    for word in re.split(r"[\s\-]+", name.translate(_NAME_LETTER_MAP).upper()):
+        letters = re.sub(r"[^A-Z]", "", word)
+        if letters:
+            key += letters
+            bounds.add(len(key))
+    return key, bounds
+
+
+def _name_matches(entered: str, stored: str) -> bool:
+    """Kiritilgan F.I.Sh. Excel'dagi F.I.Sh. boshiga to'liq so'zlar bo'yicha mos kelishi kerak.
+
+    Apostrof, chiziqcha va qoraqalpoq harflari farqi hisobga olinmaydi:
+    'FAMILIYA ABDURAHMON' Excel'dagi 'FAMILIYA ABDU-RAHMON OTASINING_ISMI O'G'LI' ga mos keladi,
+    lekin 'FAMILIYA ALI' Excel'dagi 'FAMILIYA ALISHER' ga mos kelmaydi.
+    """
+    entered_key, _ = _name_key(entered)
+    stored_key, stored_bounds = _name_key(stored)
+    return bool(entered_key) and stored_key.startswith(entered_key) and len(entered_key) in stored_bounds
 
 
 def find_student(students: list[Student], full_name: str | None = None,

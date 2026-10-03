@@ -125,3 +125,18 @@ def test_registry_reloads_when_file_changes(tmp_path):
     write_workbook(path, rows=[[1, "YANGI TALABA", "901231231", "TY1231231", 556]])
     os.utime(path, (time.time() + 5, time.time() + 5))
     assert reg.find_student("YANGI TALABA", "901231231", "TY1231231").hemis_id == "556"
+
+
+def test_name_matching_tolerates_hyphens_apostrophes_and_karakalpak_letters():
+    from bot import _name_matches
+    assert _name_matches("FAMILIYA ABDURAHMON", "FAMILIYA ABDU-RAHMON ALIYEVICH")
+    assert _name_matches("FAMILIYA ABDU RAHMON", "FAMILIYA ABDU-RAHMON")
+    assert _name_matches("FAMILIYA ISM OTA O'G'LI", "FAMILIYA ISM OTA-O‘G‘LI")
+    assert _name_matches("GULOMOV ISM", "G'ULOMOV ISM")
+    assert _name_matches("FAMILIYA ISM OTA OGLI", "FAMILIYA ISM OTA ÓǴLI")
+    assert _name_matches("FAMILIYA ISM OTA", "FAMILIYA ISM OTA'")
+    # Faqat to'liq so'zlar: qisqa ism uzunroq ismga mos kelmaydi
+    assert not _name_matches("FAMILIYA ALI", "FAMILIYA ALISHER")
+    assert not _name_matches("FAMILIYA", "FAMILIYAXON ISM")
+    assert not _name_matches("BOSHQA ISM", "FAMILIYA ISM")
+    assert not _name_matches("", "FAMILIYA ISM")
