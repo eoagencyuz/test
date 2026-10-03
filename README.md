@@ -36,6 +36,9 @@ bot keyinroq qayta yuboradi. Qayta ro'yxatdan o'tgan talabaning qatori yangilana
    `google_apps_script/registrations.gs` faylidagi kodni qo'ying va saqlang.
 3. Chap menyuda **⚙️ Project Settings → Script properties → Add script property**:
    nomi `SECRET`, qiymati — uzun tasodifiy maxfiy so'z (masalan, 32+ belgi).
+   Skript jadvaldan emas, script.google.com orqali yaratilgan bo'lsa, `SPREADSHEET_ID` xususiyatini ham
+   qo'shing (jadval havolasidagi `/d/` va `/edit` orasidagi qism).
+   Tekshirish: funksiyalar ro'yxatidan `testYozish` ni tanlab ▶ Run bosing — jadvalda sinov qatori paydo bo'lishi kerak.
 4. **Deploy → New deployment → Type: Web app**:
    - *Execute as*: **Me**
    - *Who has access*: **Anyone**

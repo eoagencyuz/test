@@ -4,6 +4,8 @@
  * O'rnatish: README.md dagi "Google Sheets" bo'limiga qarang.
  * Maxfiy kalit "Script properties" ichida SECRET nomi bilan saqlanadi
  * (botdagi SHEETS_SECRET bilan bir xil bo'lishi kerak).
+ * Skript jadvaldan tashqarida (script.google.com orqali) yaratilgan bo'lsa,
+ * "Script properties" ga SPREADSHEET_ID ham qo'shing (jadval havolasidagi /d/ dan keyingi qism).
  */
 const SHEET_NAME = "Ro'yxatdan o'tganlar";
 const HEADERS = [
@@ -45,7 +47,11 @@ function doPost(e) {
   const lock = LockService.getScriptLock();
   lock.waitLock(20000);
   try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const spreadsheetId = PropertiesService.getScriptProperties().getProperty("SPREADSHEET_ID");
+    const ss = spreadsheetId ? SpreadsheetApp.openById(spreadsheetId) : SpreadsheetApp.getActiveSpreadsheet();
+    if (!ss) {
+      return jsonOutput({ ok: false, error: "no_spreadsheet" });
+    }
     const sheet = ss.getSheetByName(SHEET_NAME) || ss.insertSheet(SHEET_NAME);
     if (sheet.getLastRow() === 0) {
       sheet.appendRow(HEADERS);
@@ -73,4 +79,17 @@ function doPost(e) {
   } finally {
     lock.releaseLock();
   }
+}
+
+/**
+ * Sinov: Apps Script'da shu funksiyani tanlab "Выполнить / Run" bosing.
+ * Jadvalda "SINOV QATORI" paydo bo'lsa, skript to'g'ri ishlayapti (keyin qatorni o'chiring).
+ */
+function testYozish() {
+  const secret = PropertiesService.getScriptProperties().getProperty("SECRET");
+  const e = { postData: { contents: JSON.stringify({
+    secret: secret,
+    record: { telegram_id: "TEST", full_name: "SINOV QATORI", hemis_id: "TEST" },
+  }) } };
+  Logger.log(doPost(e).getContent());
 }
