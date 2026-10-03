@@ -62,7 +62,7 @@ Botdan faqat kanal a'zolari foydalanishi uchun:
    (yopiq kanal bo'lsa `-100...` ID va `REQUIRED_CHANNEL_URL=https://t.me/+taklif_havolasi`).
 
 A'zo bo'lmagan foydalanuvchiga bot "Kanalga a'zo bo'ling" xabarini va «✅ Tekshirish» tugmasini ko'rsatadi.
-`REQUIRED_CHANNEL` bo'sh bo'lsa, tekshiruv o'chiq.
+Standart kanal `@kiu_uz`; tekshiruvni o'chirish uchun `REQUIRED_CHANNEL=off`.
 
 ## Testlar
 

@@ -103,9 +103,11 @@ SHEETS_WEBHOOK_URL = os.environ.get("SHEETS_WEBHOOK_URL", "").strip()
 SHEETS_SECRET = os.environ.get("SHEETS_SECRET", "").strip()
 SHEETS_SYNC_INTERVAL = int(os.environ.get("SHEETS_SYNC_INTERVAL", 60))
 
-# Majburiy kanal: bo'sh bo'lsa tekshirilmaydi. Masalan: @kiu_uz yoki -1001234567890.
-# Bot shu kanalda administrator bo'lishi kerak (a'zolikni tekshirish uchun).
-REQUIRED_CHANNEL = os.environ.get("REQUIRED_CHANNEL", "").strip()
+# Majburiy kanal (standart: @kiu_uz). Boshqa kanal uchun REQUIRED_CHANNEL=@kanal yoki -100...;
+# o'chirish uchun REQUIRED_CHANNEL=off. Bot shu kanalda administrator bo'lishi kerak.
+REQUIRED_CHANNEL = os.environ.get("REQUIRED_CHANNEL", "@kiu_uz").strip()
+if REQUIRED_CHANNEL.lower() in ("off", "no", "0", "-"):
+    REQUIRED_CHANNEL = ""
 # Kanal havolasi (tugma uchun). Bo'sh bo'lsa @username dan yasaladi.
 REQUIRED_CHANNEL_URL = os.environ.get("REQUIRED_CHANNEL_URL", "").strip() or (
     f"https://t.me/{REQUIRED_CHANNEL[1:]}" if REQUIRED_CHANNEL.startswith("@") else ""
